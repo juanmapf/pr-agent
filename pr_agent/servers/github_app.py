@@ -1,3 +1,5 @@
+#!/usr/local/bin python
+
 import copy
 import logging
 import sys
@@ -91,6 +93,12 @@ async def handle_request(body: Dict[str, Any], event: str):
         if sender and bot_user in sender:
             logging.info(f"Ignoring comment from {bot_user} user")
             return {}
+        
+        # To begin with, only allow comments from juanmapf user
+        if "juanmapf" not in sender:
+            logging.info(f"Ignoring comment from {sender} user")
+            return {}
+        
         logging.info(f"Processing comment from {sender} user")
         if "issue" in body and "pull_request" in body["issue"] and "url" in body["issue"]["pull_request"]:
             api_url = body["issue"]["pull_request"]["url"]
