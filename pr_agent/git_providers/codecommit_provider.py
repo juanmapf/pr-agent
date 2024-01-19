@@ -61,6 +61,7 @@ class CodeCommitProvider(GitProvider):
         self.pr = None
         self.diff_files = None
         self.git_files = None
+        self.pr_url = pr_url
         if pr_url:
             self.set_pr(pr_url)
 
@@ -215,7 +216,7 @@ class CodeCommitProvider(GitProvider):
     def publish_labels(self, labels):
         return [""]  # not implemented yet
 
-    def get_labels(self):
+    def get_pr_labels(self):
         return [""]  # not implemented yet
 
     def remove_initial_comment(self):
@@ -227,9 +228,6 @@ class CodeCommitProvider(GitProvider):
     def publish_inline_comment(self, body: str, relevant_file: str, relevant_line_in_file: str):
         # https://boto3.amazonaws.com/v1/documentation/api/latest/reference/services/codecommit/client/post_comment_for_compared_commit.html
         raise NotImplementedError("CodeCommit provider does not support publishing inline comments yet")
-
-    def create_inline_comment(self, body: str, relevant_file: str, relevant_line_in_file: str):
-        raise NotImplementedError("CodeCommit provider does not support creating inline comments yet")
 
     def publish_inline_comments(self, comments: list[dict]):
         raise NotImplementedError("CodeCommit provider does not support publishing inline comments yet")

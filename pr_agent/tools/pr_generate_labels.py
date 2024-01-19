@@ -1,10 +1,12 @@
 import copy
 import re
+from functools import partial
 from typing import List, Tuple
 
 from jinja2 import Environment, StrictUndefined
 
-from pr_agent.algo.ai_handler import AiHandler
+from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
+from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.pr_processing import get_pr_diff, retry_with_fallback_models
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import load_yaml, set_custom_labels, get_user_labels
@@ -15,7 +17,8 @@ from pr_agent.log import get_logger
 
 
 class PRGenerateLabels:
-    def __init__(self, pr_url: str, args: list = None):
+    def __init__(self, pr_url: str, args: list = None,
+                 ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
         """
         Initialize the PRGenerateLabels object with the necessary attributes and objects for generating labels
         corresponding to the PR using an AI model.
@@ -31,7 +34,7 @@ class PRGenerateLabels:
         self.pr_id = self.git_provider.get_pr_id()
 
         # Initialize the AI handler
-        self.ai_handler = AiHandler()
+        self.ai_handler = ai_handler()
     
         # Initialize the variables dictionary
         self.vars = {
@@ -40,7 +43,6 @@ class PRGenerateLabels:
             "description": self.git_provider.get_pr_description(full=False),
             "language": self.main_pr_language,
             "diff": "",  # empty diff for initial calculation
-            "use_bullet_points": get_settings().pr_description.use_bullet_points,
             "extra_instructions": get_settings().pr_description.extra_instructions,
             "commit_messages_str": self.git_provider.get_commit_messages(),
             "enable_custom_labels": get_settings().config.enable_custom_labels,
@@ -82,7 +84,7 @@ class PRGenerateLabels:
             if get_settings().config.publish_output:
                 get_logger().info(f"Pushing labels {self.pr_id}")
 
-                current_labels = self.git_provider.get_labels()
+                current_labels = self.git_provider.get_pr_labels()
                 user_labels = get_user_labels(current_labels)
                 pr_labels = pr_labels + user_labels
 
@@ -132,7 +134,8 @@ class PRGenerateLabels:
         variables["diff"] = self.patches_diff  # update diff
 
         environment = Environment(undefined=StrictUndefined)
-        set_custom_labels(variables)
+        set_custom_labels(variables, self.git_provider)
+        self.variables = variables
         system_prompt = environment.from_string(get_settings().pr_custom_labels_prompt.system).render(variables)
         user_prompt = environment.from_string(get_settings().pr_custom_labels_prompt.user).render(variables)
 
@@ -167,5 +170,15 @@ class PRGenerateLabels:
                 pr_types = self.data['labels']
             elif type(self.data['labels']) == str:
                 pr_types = self.data['labels'].split(',')
+
+        # convert lowercase labels to original case
+        try:
+            if "labels_minimal_to_labels_dict" in self.variables:
+                d: dict = self.variables["labels_minimal_to_labels_dict"]
+                for i, label_i in enumerate(pr_types):
+                    if label_i in d:
+                        pr_types[i] = d[label_i]
+        except Exception as e:
+            get_logger().error(f"Error converting labels to original case {self.pr_id}: {e}")
 
         return pr_types

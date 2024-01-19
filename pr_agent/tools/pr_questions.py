@@ -1,24 +1,27 @@
 import copy
+from functools import partial
 
 from jinja2 import Environment, StrictUndefined
 
-from pr_agent.algo.ai_handler import AiHandler
+from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
+from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.pr_processing import get_pr_diff, retry_with_fallback_models
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider
 from pr_agent.git_providers.git_provider import get_main_pr_language
 from pr_agent.log import get_logger
+from pr_agent.servers.help import HelpMessage
 
 
 class PRQuestions:
-    def __init__(self, pr_url: str, args=None):
+    def __init__(self, pr_url: str, args=None, ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
         question_str = self.parse_args(args)
         self.git_provider = get_git_provider()(pr_url)
         self.main_pr_language = get_main_pr_language(
             self.git_provider.get_languages(), self.git_provider.get_files()
         )
-        self.ai_handler = AiHandler()
+        self.ai_handler = ai_handler()
         self.question_str = question_str
         self.vars = {
             "title": self.git_provider.pr.title,
@@ -50,6 +53,11 @@ class PRQuestions:
         await retry_with_fallback_models(self._prepare_prediction)
         get_logger().info('Preparing answer...')
         pr_comment = self._prepare_pr_answer()
+        if self.git_provider.is_supported("gfm_markdown") and get_settings().pr_questions.enable_help_text:
+            pr_comment += "<hr>\n\n<details> <summary><strong>✨ Usage guide:</strong></summary><hr> \n\n"
+            pr_comment += HelpMessage.get_ask_usage_guide()
+            pr_comment += "\n</details>\n"
+
         if get_settings().config.publish_output:
             get_logger().info('Pushing answer...')
             self.git_provider.publish_comment(pr_comment)

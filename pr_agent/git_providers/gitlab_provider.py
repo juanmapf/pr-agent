@@ -37,6 +37,7 @@ class GitLabProvider(GitProvider):
         self.diff_files = None
         self.git_files = None
         self.temp_comments = []
+        self.pr_url = merge_request_url
         self._set_merge_request(merge_request_url)
         self.RE_HUNK_HEADER = re.compile(
             r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@[ ]?(.*)")
@@ -114,12 +115,20 @@ class GitLabProvider(GitProvider):
                 if not patch:
                     patch = load_large_diff(filename, new_file_content_str, original_file_content_str)
 
+
+                # count number of lines added and removed
+                patch_lines = patch.splitlines(keepends=True)
+                num_plus_lines = len([line for line in patch_lines if line.startswith('+')])
+                num_minus_lines = len([line for line in patch_lines if line.startswith('-')])
                 diff_files.append(
                     FilePatchInfo(original_file_content_str, new_file_content_str,
                                   patch=patch,
                                   filename=filename,
                                   edit_type=edit_type,
-                                  old_filename=None if diff['old_path'] == diff['new_path'] else diff['old_path']))
+                                  old_filename=None if diff['old_path'] == diff['new_path'] else diff['old_path'],
+                                  num_plus_lines=num_plus_lines,
+                                  num_minus_lines=num_minus_lines, ))
+
         self.diff_files = diff_files
         return diff_files
 
@@ -174,7 +183,7 @@ class GitLabProvider(GitProvider):
         self.send_inline_comment(body, edit_type, found, relevant_file, relevant_line_in_file, source_line_no,
                                  target_file, target_line_no)
 
-    def create_inline_comment(self, body: str, relevant_file: str, relevant_line_in_file: str):
+    def create_inline_comment(self, body: str, relevant_file: str, relevant_line_in_file: str, absolute_position: int = None):
         raise NotImplementedError("Gitlab provider does not support creating inline comments yet")
 
     def create_inline_comments(self, comments: list[dict]):
@@ -202,7 +211,11 @@ class GitLabProvider(GitProvider):
                 pos_obj['new_line'] = target_line_no - 1
                 pos_obj['old_line'] = source_line_no - 1
             get_logger().debug(f"Creating comment in {self.id_mr} with body {body} and position {pos_obj}")
-            self.mr.discussions.create({'body': body, 'position': pos_obj})
+            try:
+                self.mr.discussions.create({'body': body, 'position': pos_obj})
+            except Exception as e:
+                get_logger().debug(
+                    f"Failed to create comment in {self.id_mr} with position {pos_obj} (probably not a '+' line)")
 
     def get_relevant_diff(self, relevant_file: str, relevant_line_in_file: int) -> Optional[dict]:
         changes = self.mr.changes()  # Retrieve the changes for the merge request once
@@ -395,8 +408,11 @@ class GitLabProvider(GitProvider):
     def publish_inline_comments(self, comments: list[dict]):
         pass
 
-    def get_labels(self):
+    def get_pr_labels(self):
         return self.mr.labels
+
+    def get_repo_labels(self):
+        return self.gl.projects.get(self.id_project).labels.list()
 
     def get_commit_messages(self):
         """
@@ -423,10 +439,12 @@ class GitLabProvider(GitProvider):
             return ""
 
     def get_line_link(self, relevant_file: str, relevant_line_start: int, relevant_line_end: int = None) -> str:
-        if relevant_line_end:
-            link = f"https://gitlab.com/codiumai/pr-agent/-/blob/{self.mr.source_branch}/{relevant_file}?ref_type=heads#L{relevant_line_start}-L{relevant_line_end}"
+        if relevant_line_start == -1:
+            link = f"{self.gl.url}/{self.id_project}/-/blob/{self.mr.source_branch}/{relevant_file}?ref_type=heads"
+        elif relevant_line_end:
+            link = f"{self.gl.url}/{self.id_project}/-/blob/{self.mr.source_branch}/{relevant_file}?ref_type=heads#L{relevant_line_start}-L{relevant_line_end}"
         else:
-            link = f"https://gitlab.com/codiumai/pr-agent/-/blob/{self.mr.source_branch}/{relevant_file}?ref_type=heads#L{relevant_line_start}"
+            link = f"{self.gl.url}/{self.id_project}/-/blob/{self.mr.source_branch}/{relevant_file}?ref_type=heads#L{relevant_line_start}"
         return link
 
 
@@ -442,7 +460,7 @@ class GitLabProvider(GitProvider):
 
             if absolute_position != -1:
                 # link to right file only
-                link = f"https://gitlab.com/codiumai/pr-agent/-/blob/{self.mr.source_branch}/{relevant_file}?ref_type=heads#L{absolute_position}"
+                link = f"{self.gl.url}/{self.id_project}/-/blob/{self.mr.source_branch}/{relevant_file}?ref_type=heads#L{absolute_position}"
 
                 # # link to diff
                 # sha_file = hashlib.sha1(relevant_file.encode('utf-8')).hexdigest()

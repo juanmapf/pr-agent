@@ -7,6 +7,7 @@ publish_output_progress=true
 verbosity_level=0 # 0,1,2
 use_extra_bad_extensions=false
 use_repo_settings_file=true
+use_global_settings_file=true
 ai_timeout=180
 max_description_tokens = 500
 max_commits_tokens = 500
@@ -22,11 +23,14 @@ require_score_review=false
 require_tests_review=true
 require_security_review=true
 require_estimate_effort_to_review=true
+# soc2
+require_soc2_ticket=false
+soc2_ticket_prompt="Does the PR description include a link to ticket in a project management system (e.g., Jira, Asana, Trello, etc.) ?"
 # general options
 num_code_suggestions=4
 inline_code_comments = false
 ask_and_reflect=false
-automatic_review=true
+#automatic_review=true
 remove_previous_review_comment=false
 persistent_comment=true
 extra_instructions = ""
@@ -37,6 +41,7 @@ enable_review_labels_effort=false
 require_all_thresholds_for_incremental_review=false
 minimal_commits_for_incremental_review=0
 minimal_minutes_for_incremental_review=0
+enable_help_text=true # Determines whether to include help text in the PR review. Enabled by default.
 
 [pr_description] # /describe #
 publish_labels=true
@@ -46,21 +51,31 @@ keep_original_user_title=true
 use_bullet_points=true
 extra_instructions = ""
 enable_pr_type=true
-
+final_update_message = true
+enable_help_text=true
+## changes walkthrough section
+enable_semantic_files_types=true
+collapsible_file_list='adaptive' # true, false, 'adaptive'
+inline_file_summary=true # Pro feature
 # markers
 use_description_markers=false
 include_generated_by_header=false
 
-#custom_labels = ['Bug fix', 'Tests', 'Bug fix with tests', 'Refactoring', 'Enhancement', 'Documentation', 'Other']
+#custom_labels = ['Bug fix', 'Tests', 'Bug fix with tests', 'Enhancement', 'Documentation', 'Other']
 
 [pr_questions] # /ask #
+enable_help_text=true
+
 
 [pr_code_suggestions] # /improve #
 num_code_suggestions=4
 summarize = false
+include_improved_code = true
 extra_instructions = ""
 rank_suggestions = false
+enable_help_text=true
 # params for '/improve --extended' mode
+auto_extended_mode=false
 num_code_suggestions_per_chunk=8
 rank_extended_suggestions = true
 max_number_of_calls = 5
@@ -73,6 +88,8 @@ docs_style = "Sphinx Style" # "Google Style with Args, Returns, Attributes...etc
 [pr_update_changelog] # /update_changelog #
 push_changelog_changes=false
 extra_instructions = ""
+
+[pr_analyze] # /analyze #
 
 [pr_config] # /config #
 
@@ -99,8 +116,8 @@ duplicate_requests_cache_ttl = 60  # in seconds
 handle_pr_actions = ['opened', 'reopened', 'ready_for_review', 'review_requested']
 pr_commands = [
     "/describe --pr_description.add_original_user_description=true --pr_description.keep_original_user_title=true",
-    "/auto_review",
-    "/improve",
+    "/review --pr_reviewer.num_code_suggestions=0",
+    "/improve --pr_code_suggestions.summarize=true",
 ]
 # settings for "pull_request" event with "synchronize" action - used to detect and handle push triggers for new commits
 handle_push_trigger = false
@@ -140,6 +157,12 @@ magic_word = "AutoReview"
 # Polling interval
 polling_interval_seconds = 30
 
+[bitbucket_app]
+#auto_review = true    # set as config var in .pr_agent.toml
+#auto_describe = true  # set as config var in .pr_agent.toml
+#auto_improve = true   # set as config var in .pr_agent.toml
+
+
 [local]
 # LocalGitProvider settings - uncomment to use paths other than default
 # description_path= "path/to/description.md"
@@ -155,6 +178,11 @@ polling_interval_seconds = 30
 # token to authenticate in the patch server
 # patch_server_token = ""
 
+[bitbucket_server]
+# URL to the BitBucket Server instance
+# url = "https://git.bitbucket.com"
+url = ""
+
 [litellm]
 #use_client = false
 
@@ -162,8 +190,12 @@ polling_interval_seconds = 30
 skip_comments = false
 force_update_dataset = false
 max_issues_to_scan = 500
+vectordb = "pinecone"
 
 [pinecone]
 # fill and place in .secrets.toml
 #api_key = ...
 # environment = "gcp-starter"
+
+[lancedb]
+uri = "./lancedb"

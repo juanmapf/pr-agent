@@ -226,6 +226,11 @@ async def retry_with_fallback_models(f: Callable):
     # try each (model, deployment_id) pair until one is successful, otherwise raise exception
     for i, (model, deployment_id) in enumerate(zip(all_models, all_deployments)):
         try:
+            if get_settings().config.verbosity_level >= 2:
+                get_logger().debug(
+                    f"Generating prediction with {model}"
+                    f"{(' from deployment ' + deployment_id) if deployment_id else ''}"
+                )
             get_settings().set("openai.deployment_id", deployment_id)
             return await f(model)
         except Exception as e:
@@ -264,20 +269,11 @@ def _get_all_deployments(all_models: List[str]) -> List[str]:
 
 def find_line_number_of_relevant_line_in_file(diff_files: List[FilePatchInfo],
                                               relevant_file: str,
-                                              relevant_line_in_file: str) -> Tuple[int, int]:
-    """
-    Find the line number and absolute position of a relevant line in a file.
-
-    Args:
-        diff_files (List[FilePatchInfo]): A list of FilePatchInfo objects representing the patches of files.
-        relevant_file (str): The name of the file where the relevant line is located.
-        relevant_line_in_file (str): The content of the relevant line.
-
-    Returns:
-        Tuple[int, int]: A tuple containing the line number and absolute position of the relevant line in the file.
-    """
+                                              relevant_line_in_file: str,
+                                              absolute_position: int = None) -> Tuple[int, int]:
     position = -1
-    absolute_position = -1
+    if absolute_position is None:
+        absolute_position = -1
     re_hunk_header = re.compile(
         r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@[ ]?(.*)")
 
@@ -285,30 +281,32 @@ def find_line_number_of_relevant_line_in_file(diff_files: List[FilePatchInfo],
         if file.filename and (file.filename.strip() == relevant_file):
             patch = file.patch
             patch_lines = patch.splitlines()
-
-            # try to find the line in the patch using difflib, with some margin of error
-            matches_difflib: list[str | Any] = difflib.get_close_matches(relevant_line_in_file,
-                                                                         patch_lines, n=3, cutoff=0.93)
-            if len(matches_difflib) == 1 and matches_difflib[0].startswith('+'):
-                relevant_line_in_file = matches_difflib[0]
-
             delta = 0
             start1, size1, start2, size2 = 0, 0, 0, 0
-            for i, line in enumerate(patch_lines):
-                if line.startswith('@@'):
-                    delta = 0
-                    match = re_hunk_header.match(line)
-                    start1, size1, start2, size2 = map(int, match.groups()[:4])
-                elif not line.startswith('-'):
-                    delta += 1
+            if absolute_position != -1: # matching absolute to relative
+                for i, line in enumerate(patch_lines):
+                    # new hunk
+                    if line.startswith('@@'):
+                        delta = 0
+                        match = re_hunk_header.match(line)
+                        start1, size1, start2, size2 = map(int, match.groups()[:4])
+                    elif not line.startswith('-'):
+                        delta += 1
 
-                if relevant_line_in_file in line and line[0] != '-':
-                    position = i
-                    absolute_position = start2 + delta - 1
-                    break
+                    #
+                    absolute_position_curr = start2 + delta - 1
 
-            if position == -1 and relevant_line_in_file[0] == '+':
-                no_plus_line = relevant_line_in_file[1:].lstrip()
+                    if absolute_position_curr == absolute_position:
+                        position = i
+                        break
+            else:
+                # try to find the line in the patch using difflib, with some margin of error
+                matches_difflib: list[str | Any] = difflib.get_close_matches(relevant_line_in_file,
+                                                                             patch_lines, n=3, cutoff=0.93)
+                if len(matches_difflib) == 1 and matches_difflib[0].startswith('+'):
+                    relevant_line_in_file = matches_difflib[0]
+
+
                 for i, line in enumerate(patch_lines):
                     if line.startswith('@@'):
                         delta = 0
@@ -317,12 +315,27 @@ def find_line_number_of_relevant_line_in_file(diff_files: List[FilePatchInfo],
                     elif not line.startswith('-'):
                         delta += 1
 
-                    if no_plus_line in line and line[0] != '-':
-                        # The model might add a '+' to the beginning of the relevant_line_in_file even if originally
-                        # it's a context line
+                    if relevant_line_in_file in line and line[0] != '-':
                         position = i
                         absolute_position = start2 + delta - 1
                         break
+
+                if position == -1 and relevant_line_in_file[0] == '+':
+                    no_plus_line = relevant_line_in_file[1:].lstrip()
+                    for i, line in enumerate(patch_lines):
+                        if line.startswith('@@'):
+                            delta = 0
+                            match = re_hunk_header.match(line)
+                            start1, size1, start2, size2 = map(int, match.groups()[:4])
+                        elif not line.startswith('-'):
+                            delta += 1
+
+                        if no_plus_line in line and line[0] != '-':
+                            # The model might add a '+' to the beginning of the relevant_line_in_file even if originally
+                            # it's a context line
+                            position = i
+                            absolute_position = start2 + delta - 1
+                            break
     return position, absolute_position
 
 

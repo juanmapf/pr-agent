@@ -34,6 +34,7 @@ class GithubProvider(GitProvider):
         if pr_url and 'pull' in pr_url:
             self.set_pr(pr_url)
             self.last_commit_id = list(self.pr.get_commits())[-1]
+            self.pr_url = self.get_pr_url() # pr_url for github actions can be as api.github.com, so we need to get the url from the pr object
 
     def is_supported(self, capability: str) -> bool:
         return True
@@ -60,6 +61,8 @@ class GithubProvider(GitProvider):
                     get_logger().info(f"Skipping merge commit {commit.commit.message}")
                     continue
                 self.file_set.update({file.filename: file for file in commit.files})
+        else:
+            raise ValueError("No previous review found")
 
     def get_commit_range(self):
         last_review_time = self.previous_review.created_at
@@ -140,8 +143,15 @@ class GithubProvider(GitProvider):
                 else:
                     get_logger().error(f"Unknown edit type: {file.status}")
                     edit_type = EDIT_TYPE.UNKNOWN
+
+                # count number of lines added and removed
+                patch_lines = patch.splitlines(keepends=True)
+                num_plus_lines = len([line for line in patch_lines if line.startswith('+')])
+                num_minus_lines = len([line for line in patch_lines if line.startswith('-')])
                 file_patch_canonical_structure = FilePatchInfo(original_file_content_str, new_file_content_str, patch,
-                                                               file.filename, edit_type=edit_type)
+                                                               file.filename, edit_type=edit_type,
+                                                               num_plus_lines=num_plus_lines,
+                                                               num_minus_lines=num_minus_lines,)
                 diff_files.append(file_patch_canonical_structure)
 
             self.diff_files = diff_files
@@ -196,8 +206,12 @@ class GithubProvider(GitProvider):
         self.publish_inline_comments([self.create_inline_comment(body, relevant_file, relevant_line_in_file)])
 
 
-    def create_inline_comment(self, body: str, relevant_file: str, relevant_line_in_file: str):
-        position, absolute_position = find_line_number_of_relevant_line_in_file(self.diff_files, relevant_file.strip('`'), relevant_line_in_file)
+    def create_inline_comment(self, body: str, relevant_file: str, relevant_line_in_file: str,
+                              absolute_position: int = None):
+        position, absolute_position = find_line_number_of_relevant_line_in_file(self.diff_files,
+                                                                                relevant_file.strip('`'),
+                                                                                relevant_line_in_file,
+                                                                                absolute_position)
         if position == -1:
             if get_settings().config.verbosity_level >= 2:
                 get_logger().info(f"Could not find position for {relevant_file} {relevant_line_in_file}")
@@ -439,7 +453,7 @@ class GithubProvider(GitProvider):
     def publish_labels(self, pr_types):
         try:
             label_color_map = {"Bug fix": "1d76db", "Tests": "e99695", "Bug fix with tests": "c5def5",
-                               "Refactoring": "bfdadc", "Enhancement": "bfd4f2", "Documentation": "d4c5f9",
+                               "Enhancement": "bfd4f2", "Documentation": "d4c5f9",
                                "Other": "d1bcf9"}
             post_parameters = []
             for p in pr_types:
@@ -451,12 +465,16 @@ class GithubProvider(GitProvider):
         except Exception as e:
             get_logger().exception(f"Failed to publish labels, error: {e}")
 
-    def get_labels(self):
+    def get_pr_labels(self):
         try:
             return [label.name for label in self.pr.labels]
         except Exception as e:
             get_logger().exception(f"Failed to get labels, error: {e}")
             return []
+
+    def get_repo_labels(self):
+        labels = self.repo_obj.get_labels()
+        return [label for label in labels]
 
     def get_commit_messages(self):
         """
@@ -503,7 +521,9 @@ class GithubProvider(GitProvider):
 
     def get_line_link(self, relevant_file: str, relevant_line_start: int, relevant_line_end: int = None) -> str:
         sha_file = hashlib.sha256(relevant_file.encode('utf-8')).hexdigest()
-        if relevant_line_end:
+        if relevant_line_start == -1:
+            link = f"https://github.com/{self.repo}/pull/{self.pr_num}/files#diff-{sha_file}"
+        elif relevant_line_end:
             link = f"https://github.com/{self.repo}/pull/{self.pr_num}/files#diff-{sha_file}R{relevant_line_start}-R{relevant_line_end}"
         else:
             link = f"https://github.com/{self.repo}/pull/{self.pr_num}/files#diff-{sha_file}R{relevant_line_start}"

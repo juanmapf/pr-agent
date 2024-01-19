@@ -210,11 +210,14 @@ class BitbucketServerProvider(GitProvider):
         pass
 
     # funtion to create_inline_comment
-    def create_inline_comment(self, body: str, relevant_file: str, relevant_line_in_file: str):
+    def create_inline_comment(self, body: str, relevant_file: str, relevant_line_in_file: str,
+                              absolute_position: int = None):
+
         position, absolute_position = find_line_number_of_relevant_line_in_file(
             self.get_diff_files(),
             relevant_file.strip('`'),
-            relevant_line_in_file
+            relevant_line_in_file,
+            absolute_position
         )
         if position == -1:
             if get_settings().config.verbosity_level >= 2:
@@ -344,7 +347,7 @@ class BitbucketServerProvider(GitProvider):
         pass
     
     # bitbucket does not support labels
-    def get_labels(self):
+    def get_pr_labels(self):
         pass
 
     def _get_pr_comments_url(self):

@@ -192,7 +192,7 @@ class GerritProvider(GitProvider):
         )
         self.repo = Repo(self.repo_path)
         assert self.repo
-
+        self.pr_url = base_url
         self.pr = PullRequestMimic(self.get_pr_title(), self.get_diff_files())
 
     def get_pr_title(self):
@@ -207,7 +207,7 @@ class GerritProvider(GitProvider):
         Comment = namedtuple('Comment', ['body'])
         return Comments([Comment(c['message']) for c in reversed(comments)])
 
-    def get_labels(self):
+    def get_pr_labels(self):
         raise NotImplementedError(
             'Getting labels is not implemented for the gerrit provider')
 
@@ -380,11 +380,6 @@ class GerritProvider(GitProvider):
             'Publishing inline comments is not implemented for the gerrit '
             'provider')
 
-    def create_inline_comment(self, body: str, relevant_file: str,
-                              relevant_line_in_file: str):
-        raise NotImplementedError(
-            'Creating inline comments is not implemented for the gerrit '
-            'provider')
 
     def publish_labels(self, labels):
         # Not applicable to the local git provider,

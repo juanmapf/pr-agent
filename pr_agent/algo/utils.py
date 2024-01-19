@@ -49,7 +49,7 @@ def convert_to_markdown(output_data: dict, gfm_supported: bool=True) -> str:
     }
 
     for key, value in output_data.items():
-        if value is None or value == '' or value == {}:
+        if value is None or value == '' or value == {} or value == []:
             continue
         if isinstance(value, dict):
             markdown_text += f"## {key}\n\n"
@@ -58,15 +58,15 @@ def convert_to_markdown(output_data: dict, gfm_supported: bool=True) -> str:
             emoji = emojis.get(key, "")
             if key.lower() == 'code feedback':
                 if gfm_supported:
-                    markdown_text += f"\n\n- "
-                    markdown_text += f"<details><summary> { emoji } Code feedback:</summary>\n\n"
+                    markdown_text += f"\n\n"
+                    markdown_text += f"<details><summary> <strong>{ emoji } Code feedback:</strong></summary>"
                 else:
-                    markdown_text += f"\n\n- **{emoji} Code feedback:**\n\n"
+                    markdown_text += f"\n\n**{emoji} Code feedback:**\n\n"
             else:
                 markdown_text += f"- {emoji} **{key}:**\n\n"
-            for item in value:
+            for i, item in enumerate(value):
                 if isinstance(item, dict) and key.lower() == 'code feedback':
-                    markdown_text += parse_code_suggestion(item, gfm_supported)
+                    markdown_text += parse_code_suggestion(item, i, gfm_supported)
                 elif item:
                     markdown_text += f"  - {item}\n"
             if key.lower() == 'code feedback':
@@ -76,11 +76,17 @@ def convert_to_markdown(output_data: dict, gfm_supported: bool=True) -> str:
                     markdown_text += "\n\n"
         elif value != 'n/a':
             emoji = emojis.get(key, "")
-            markdown_text += f"- {emoji} **{key}:** {value}\n"
+            if key.lower() == 'general suggestions':
+                if gfm_supported:
+                    markdown_text += f"\n\n<strong>{emoji} General suggestions:</strong> {value}\n"
+                else:
+                    markdown_text += f"{emoji} **General suggestions:** {value}\n"
+            else:
+                markdown_text += f"- {emoji} **{key}:** {value}\n"
     return markdown_text
 
 
-def parse_code_suggestion(code_suggestions: dict, gfm_supported: bool=True) -> str:
+def parse_code_suggestion(code_suggestions: dict, i: int = 0, gfm_supported: bool = True) -> str:
     """
     Convert a dictionary of data into markdown format.
 
@@ -91,24 +97,53 @@ def parse_code_suggestion(code_suggestions: dict, gfm_supported: bool=True) -> s
         str: A string containing the markdown formatted text generated from the input dictionary.
     """
     markdown_text = ""
-    for sub_key, sub_value in code_suggestions.items():
-        if isinstance(sub_value, dict):  # "code example"
-            markdown_text += f"  - **{sub_key}:**\n"
-            for code_key, code_value in sub_value.items():  # 'before' and 'after' code
-                code_str = f"```\n{code_value}\n```"
-                code_str_indented = textwrap.indent(code_str, '        ')
-                markdown_text += f"    - **{code_key}:**\n{code_str_indented}\n"
-        else:
-            if "relevant file" in sub_key.lower():
-                markdown_text += f"\n  - **{sub_key}:** {sub_value}  \n"
+    if gfm_supported and 'relevant line' in code_suggestions:
+        if i == 0:
+            markdown_text += "<hr>"
+        markdown_text += '<table>'
+        for sub_key, sub_value in code_suggestions.items():
+            try:
+                if sub_key.lower() == 'relevant file':
+                    relevant_file = sub_value.strip('`').strip('"').strip("'")
+                    markdown_text += f"<tr><td>{sub_key}</td><td>{relevant_file}</td></tr>"
+                    # continue
+                elif sub_key.lower() == 'suggestion':
+                    markdown_text += (f"<tr><td>{sub_key} &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</td>"
+                                      f"<td><br>\n\n**{sub_value.strip()}**\n<br></td></tr>")
+                elif sub_key.lower() == 'relevant line':
+                    markdown_text += f"<tr><td>relevant line</td>"
+                    sub_value_list = sub_value.split('](')
+                    relevant_line = sub_value_list[0].lstrip('`').lstrip('[')
+                    if len(sub_value_list) > 1:
+                        link = sub_value_list[1].rstrip(')').strip('`')
+                        markdown_text += f"<td><a href='{link}'>{relevant_line}</a></td>"
+                    else:
+                        markdown_text += f"<td>{relevant_line}</td>"
+                    markdown_text += "</tr>"
+            except Exception as e:
+                get_logger().exception(f"Failed to parse code suggestion: {e}")
+                pass
+        markdown_text += '</table>'
+        markdown_text += "<hr>"
+    else:
+        for sub_key, sub_value in code_suggestions.items():
+            if isinstance(sub_value, dict):  # "code example"
+                markdown_text += f"  - **{sub_key}:**\n"
+                for code_key, code_value in sub_value.items():  # 'before' and 'after' code
+                    code_str = f"```\n{code_value}\n```"
+                    code_str_indented = textwrap.indent(code_str, '        ')
+                    markdown_text += f"    - **{code_key}:**\n{code_str_indented}\n"
             else:
-                markdown_text += f"   **{sub_key}:** {sub_value}  \n"
-            if not gfm_supported:
-                if "relevant line" not in sub_key.lower(): # nicer presentation
+                if "relevant file" in sub_key.lower():
+                    markdown_text += f"\n  - **{sub_key}:** {sub_value}  \n"
+                else:
+                    markdown_text += f"   **{sub_key}:** {sub_value}  \n"
+                if not gfm_supported:
+                    if "relevant line" not in sub_key.lower():  # nicer presentation
                         # markdown_text = markdown_text.rstrip('\n') + "\\\n" # works for gitlab
                         markdown_text = markdown_text.rstrip('\n') + "   \n"  # works for gitlab and bitbucker
 
-    markdown_text += "\n"
+        markdown_text += "\n"
     return markdown_text
 
 
@@ -288,19 +323,21 @@ def _fix_key_value(key: str, value: str):
     return key, value
 
 
-def load_yaml(response_text: str) -> dict:
+def load_yaml(response_text: str, keys_fix_yaml: List[str] = []) -> dict:
     response_text = response_text.removeprefix('```yaml').rstrip('`')
     try:
         data = yaml.safe_load(response_text)
     except Exception as e:
         get_logger().error(f"Failed to parse AI prediction: {e}")
-        data = try_fix_yaml(response_text)
+        data = try_fix_yaml(response_text, keys_fix_yaml=keys_fix_yaml)
     return data
 
-def try_fix_yaml(response_text: str) -> dict:
+
+def try_fix_yaml(response_text: str, keys_fix_yaml: List[str] = []) -> dict:
     response_text_lines = response_text.split('\n')
 
-    keys = ['relevant line:', 'suggestion content:', 'relevant file:']
+    keys = ['relevant line:', 'suggestion content:', 'relevant file:', 'existing code:', 'improved code:']
+    keys = keys + keys_fix_yaml
     # first fallback - try to convert 'relevant line: ...' to relevant line: |-\n        ...'
     response_text_lines_copy = response_text_lines.copy()
     for i in range(0, len(response_text_lines_copy)):
@@ -315,18 +352,19 @@ def try_fix_yaml(response_text: str) -> dict:
     except:
         get_logger().info(f"Failed to parse AI prediction after adding |-\n")
 
-    # second fallback - try to remove last lines
-    data = {}
-    for i in range(1, len(response_text_lines)):
-        response_text_lines_tmp = '\n'.join(response_text_lines[:-i])
+    # second fallback - try to extract only range from first ```yaml to ````
+    snippet_pattern = r'```(yaml)?[\s\S]*?```'
+    snippet = re.search(snippet_pattern, '\n'.join(response_text_lines_copy))
+    if snippet:
+        snippet_text = snippet.group()
         try:
-            data = yaml.safe_load(response_text_lines_tmp,)
-            get_logger().info(f"Successfully parsed AI prediction after removing {i} lines")
-            break
+            data = yaml.safe_load(snippet_text.removeprefix('```yaml').rstrip('`'))
+            get_logger().info(f"Successfully parsed AI prediction after extracting yaml snippet")
+            return data
         except:
             pass
-    
-    # thrid fallback - try to remove leading and trailing curly brackets
+
+     # third fallback - try to remove leading and trailing curly brackets
     response_text_copy = response_text.strip().rstrip().removeprefix('{').removesuffix('}')
     try:
         data = yaml.safe_load(response_text_copy,)
@@ -335,28 +373,42 @@ def try_fix_yaml(response_text: str) -> dict:
     except:
         pass
 
+    # fourth fallback - try to remove last lines
+    data = {}
+    for i in range(1, len(response_text_lines)):
+        response_text_lines_tmp = '\n'.join(response_text_lines[:-i])
+        try:
+            data = yaml.safe_load(response_text_lines_tmp,)
+            get_logger().info(f"Successfully parsed AI prediction after removing {i} lines")
+            return data
+        except:
+            pass
 
-def set_custom_labels(variables):
+
+def set_custom_labels(variables, git_provider=None):
     if not get_settings().config.enable_custom_labels:
         return
 
     labels = get_settings().custom_labels
     if not labels:
         # set default labels
-        labels = ['Bug fix', 'Tests', 'Bug fix with tests', 'Refactoring', 'Enhancement', 'Documentation', 'Other']
+        labels = ['Bug fix', 'Tests', 'Bug fix with tests', 'Enhancement', 'Documentation', 'Other']
         labels_list = "\n      - ".join(labels) if labels else ""
         labels_list = f"      - {labels_list}" if labels_list else ""
         variables["custom_labels"] = labels_list
         return
-    #final_labels = ""
-    #for k, v in labels.items():
-    #    final_labels += f"      - {k} ({v['description']})\n"
-    #variables["custom_labels"] = final_labels
-    #variables["custom_labels_examples"] = f"      - {list(labels.keys())[0]}"
+
+    # Set custom labels
     variables["custom_labels_class"] = "class Label(str, Enum):"
+    counter = 0
+    labels_minimal_to_labels_dict = {}
     for k, v in labels.items():
-        description = v['description'].strip('\n').replace('\n', '\\n')
-        variables["custom_labels_class"] += f"\n    {k.lower().replace(' ', '_')} = '{k}' # {description}"
+        description = "'" + v['description'].strip('\n').replace('\n', '\\n') + "'"
+        # variables["custom_labels_class"] += f"\n    {k.lower().replace(' ', '_')} = '{k}' # {description}"
+        variables["custom_labels_class"] += f"\n    {k.lower().replace(' ', '_')} = {description}"
+        labels_minimal_to_labels_dict[k.lower().replace(' ', '_')] = k
+        counter += 1
+    variables["labels_minimal_to_labels_dict"] = labels_minimal_to_labels_dict
 
 def get_user_labels(current_labels: List[str] = None):
     """
@@ -367,7 +419,7 @@ def get_user_labels(current_labels: List[str] = None):
             current_labels = []
         user_labels = []
         for label in current_labels:
-            if label.lower() in ['bug fix', 'tests', 'refactoring', 'enhancement', 'documentation', 'other']:
+            if label.lower() in ['bug fix', 'tests', 'enhancement', 'documentation', 'other']:
                 continue
             if get_settings().config.enable_custom_labels:
                 if label in get_settings().custom_labels:
@@ -383,7 +435,11 @@ def get_user_labels(current_labels: List[str] = None):
 
 def get_max_tokens(model):
     settings = get_settings()
-    max_tokens_model = MAX_TOKENS[model]
+    if model in MAX_TOKENS:
+        max_tokens_model = MAX_TOKENS[model]
+    else:
+        raise Exception(f"MAX_TOKENS must be set for model {model} in ./pr_agent/algo/__init__.py")
+
     if settings.config.max_model_tokens:
         max_tokens_model = min(settings.config.max_model_tokens, max_tokens_model)
         # get_logger().debug(f"limiting max tokens to {max_tokens_model}")
@@ -419,3 +475,12 @@ def clip_tokens(text: str, max_tokens: int, add_three_dots=True) -> str:
     except Exception as e:
         get_logger().warning(f"Failed to clip tokens: {e}")
         return text
+
+def replace_code_tags(text):
+    """
+    Replace odd instances of ` with <code> and even instances of ` with </code>
+    """
+    parts = text.split('`')
+    for i in range(1, len(parts), 2):
+        parts[i] = '<code>' + parts[i] + '</code>'
+    return ''.join(parts)

@@ -1,13 +1,15 @@
 import copy
 import datetime
 from collections import OrderedDict
+from functools import partial
 from typing import List, Tuple
 
 import yaml
 from jinja2 import Environment, StrictUndefined
 from yaml import SafeLoader
 
-from pr_agent.algo.ai_handler import AiHandler
+from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
+from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.pr_processing import get_pr_diff, retry_with_fallback_models
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import convert_to_markdown, load_yaml, try_fix_yaml, set_custom_labels, get_user_labels
@@ -15,20 +17,23 @@ from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider
 from pr_agent.git_providers.git_provider import IncrementalPR, get_main_pr_language
 from pr_agent.log import get_logger
-from pr_agent.servers.help import actions_help_text, bot_help_text
+from pr_agent.servers.help import HelpMessage
 
 
 class PRReviewer:
     """
     The PRReviewer class is responsible for reviewing a pull request and generating feedback using an AI model.
     """
-    def __init__(self, pr_url: str, is_answer: bool = False, is_auto: bool = False, args: list = None):
+    def __init__(self, pr_url: str, is_answer: bool = False, is_auto: bool = False, args: list = None,
+                 ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
         """
         Initialize the PRReviewer object with the necessary attributes and objects to review a pull request.
 
         Args:
             pr_url (str): The URL of the pull request to be reviewed.
             is_answer (bool, optional): Indicates whether the review is being done in answer mode. Defaults to False.
+            is_auto (bool, optional): Indicates whether the review is being done in automatic mode. Defaults to False.
+            ai_handler (BaseAiHandler): The AI handler to be used for the review. Defaults to None.
             args (list, optional): List of arguments passed to the PRReviewer class. Defaults to None.
         """
         self.parse_args(args) # -i command
@@ -43,7 +48,7 @@ class PRReviewer:
 
         if self.is_answer and not self.git_provider.is_supported("get_issue_comments"):
             raise Exception(f"Answer mode is not supported for {get_settings().config.git_provider} for now")
-        self.ai_handler = AiHandler()
+        self.ai_handler = ai_handler()
         self.patches_diff = None
         self.prediction = None
 
@@ -93,14 +98,7 @@ class PRReviewer:
         self.incremental = IncrementalPR(is_incremental)
 
     async def run(self) -> None:
-        """
-        Review the pull request and generate feedback.
-        """
-
         try:
-            if self.is_auto and not get_settings().pr_reviewer.automatic_review:
-                get_logger().info(f'Automatic review is disabled {self.pr_url}')
-                return None
             if self.incremental.is_incremental and not self._can_run_incremental_review():
                 return None
 
@@ -110,6 +108,9 @@ class PRReviewer:
                 self.git_provider.publish_comment("Preparing review...", is_temporary=True)
 
             await retry_with_fallback_models(self._prepare_prediction)
+            if not self.prediction:
+                self.git_provider.remove_initial_comment()
+                return None
 
             get_logger().info('Preparing PR review...')
             pr_comment = self._prepare_pr_review()
@@ -136,19 +137,14 @@ class PRReviewer:
             get_logger().error(f"Failed to review PR: {e}")
 
     async def _prepare_prediction(self, model: str) -> None:
-        """
-        Prepare the AI prediction for the pull request review.
-
-        Args:
-            model: A string representing the AI model to be used for the prediction.
-
-        Returns:
-            None
-        """
         get_logger().info('Getting PR diff...')
         self.patches_diff = get_pr_diff(self.git_provider, self.token_handler, model)
-        get_logger().info('Getting AI prediction...')
-        self.prediction = await self._get_prediction(model)
+        if self.patches_diff:
+            get_logger().info('Getting AI prediction...')
+            self.prediction = await self._get_prediction(model)
+        else:
+            get_logger().error(f"Error getting PR diff")
+            self.prediction = None
 
     async def _get_prediction(self, model: str) -> str:
         """
@@ -244,20 +240,12 @@ class PRReviewer:
             data.move_to_end('Incremental PR Review', last=False)
 
         markdown_text = convert_to_markdown(data, self.git_provider.is_supported("gfm_markdown"))
-        user = self.git_provider.get_user_id()
 
-        # Add help text if not in CLI mode
-        if not get_settings().get("CONFIG.CLI_MODE", False):
-            markdown_text += "\n### How to use\n"
-            if self.git_provider.is_supported("gfm_markdown"):
-                markdown_text += "\n <details> <summary> Instructions</summary>\n\n"
-            bot_user = "[bot]" if get_settings().github_app.override_deployment_type else get_settings().github_app.bot_user
-            if user and bot_user not in user:
-                markdown_text += bot_help_text(user)
-            else:
-                markdown_text += actions_help_text
-            if self.git_provider.is_supported("gfm_markdown"):
-                markdown_text += "\n</details>\n"
+        # Add help text if gfm_markdown is supported
+        if self.git_provider.is_supported("gfm_markdown") and get_settings().pr_reviewer.enable_help_text:
+            markdown_text += "<hr>\n\n<details> <summary><strong>✨ Usage guide:</strong></summary><hr> \n\n"
+            markdown_text += HelpMessage.get_review_usage_guide()
+            markdown_text += "\n</details>\n"
 
         # Add custom labels from the review prediction (effort, security)
         self.set_review_labels(data)
@@ -392,10 +380,13 @@ class PRReviewer:
                     if security_concerns_bool:
                         review_labels.append('Possible security concern')
 
-                current_labels = self.git_provider.get_labels()
-                current_labels_filtered = [label for label in current_labels if
-                                           not label.lower().startswith('review effort [1-5]:') and not label.lower().startswith(
-                                               'possible security concern')]
+                current_labels = self.git_provider.get_pr_labels()
+                if current_labels:
+                    current_labels_filtered = [label for label in current_labels if
+                                               not label.lower().startswith('review effort [1-5]:') and not label.lower().startswith(
+                                                   'possible security concern')]
+                else:
+                    current_labels_filtered = []
                 if current_labels or review_labels:
                     get_logger().info(f"Setting review labels: {review_labels + current_labels_filtered}")
                     self.git_provider.publish_labels(review_labels + current_labels_filtered)

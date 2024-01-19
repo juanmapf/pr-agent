@@ -3,8 +3,8 @@
 
 To get started with PR-Agent quickly, you first need to acquire two tokens:
 
-1. An OpenAI key from [here](https://platform.openai.com/), with access to GPT-4.
-2. A GitHub\GitLab\BitBucket personal access token (classic) with the repo scope.
+1. An OpenAI key from [here](https://platform.openai.com/api-keys), with access to GPT-4.
+2. A GitHub\GitLab\BitBucket personal access token (classic), with the repo scope. [GitHub from [here](https://github.com/settings/tokens)]
 
 There are several ways to use PR-Agent:
 
@@ -46,7 +46,7 @@ docker run --rm -it -e OPENAI.KEY=<your key> -e CONFIG.GIT_PROVIDER=gitlab -e GI
 
 Note: If you have a dedicated GitLab instance, you need to specify the custom url as variable:
 ```
-docker run --rm -it -e OPENAI.KEY=<your key> -e CONFIG.GIT_PROVIDER=gitlab -e GITLAB.PERSONAL_ACCESS_TOKEN=<your token> GITLAB.URL=<your gitlab instance url> codiumai/pr-agent:latest --pr_url <pr_url> review
+docker run --rm -it -e OPENAI.KEY=<your key> -e CONFIG.GIT_PROVIDER=gitlab -e GITLAB.PERSONAL_ACCESS_TOKEN=<your token> -e GITLAB.URL=<your gitlab instance url> codiumai/pr-agent:latest --pr_url <pr_url> review
 ```
 
 - For BitBucket:
@@ -79,11 +79,13 @@ codiumai/pr-agent@v0.9
 git clone https://github.com/Codium-ai/pr-agent.git
 ```
 
-2. Install the requirements in your favorite virtual environment:
+2. Navigate to the `/pr-agent` folder and install the requirements in your favorite virtual environment:
 
 ```
-pip install -r requirements.txt
+pip install -e .
 ```
+
+*Note: If you get an error related to Rust in the dependency installation then make sure Rust is installed and in your `PATH`, instructions: https://rustup.rs*
 
 3. Copy the secrets template file and fill in your OpenAI key and your GitHub user token:
 
@@ -93,10 +95,9 @@ chmod 600 pr_agent/settings/.secrets.toml
 # Edit .secrets.toml file
 ```
 
-4. Add the pr_agent folder to your PYTHONPATH, then run the cli.py script:
+4. Run the cli.py script:
 
 ```
-export PYTHONPATH=[$PYTHONPATH:]<PATH to pr_agent folder>
 python3 -m pr_agent.cli --pr_url <pr_url> review
 python3 -m pr_agent.cli --pr_url <pr_url> ask <your question>
 python3 -m pr_agent.cli --pr_url <pr_url> describe
@@ -105,6 +106,11 @@ python3 -m pr_agent.cli --pr_url <pr_url> add_docs
 python3 -m pr_agent.cli --pr_url <pr_url> generate_labels
 python3 -m pr_agent.cli --issue_url <issue_url> similar_issue
 ...
+```
+
+[Optional] Add the pr_agent folder to your PYTHONPATH
+```
+export PYTHONPATH=$PYTHONPATH:<PATH to pr_agent folder>
 ```
 
 ---
@@ -206,6 +212,7 @@ Allowing you to automate the review process on your private or public repositori
    - Set the following events:
      - Issue comment
      - Pull request
+     - Push (if you need to enable triggering on PR update)
 
 2. Generate a random secret for your app, and save it for later. For example, you can use:
 
@@ -292,7 +299,8 @@ docker push codiumai/pr-agent:github_app  # Push to your Docker repository
     ```
 4. Create a lambda function that uses the uploaded image. Set the lambda timeout to be at least 3m.
 5. Configure the lambda function to have a Function URL.
-6. Go back to steps 8-9 of [Method 5](#run-as-a-github-app) with the function url as your Webhook URL.
+6. In the environment variables of the Lambda function, specify `AZURE_DEVOPS_CACHE_DIR` to a writable location such as /tmp. (see [link](https://github.com/Codium-ai/pr-agent/pull/450#issuecomment-1840242269))
+7. Go back to steps 8-9 of [Method 5](#run-as-a-github-app) with the function url as your Webhook URL.
     The Webhook URL would look like `https://<LAMBDA_FUNCTION_URL>/api/v1/github_webhooks`
 
 ---

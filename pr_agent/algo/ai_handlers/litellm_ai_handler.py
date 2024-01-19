@@ -6,13 +6,14 @@ import openai
 from litellm import acompletion
 from openai.error import APIError, RateLimitError, Timeout, TryAgain
 from retry import retry
+from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
 
 OPENAI_RETRIES = 5
 
 
-class AiHandler:
+class LiteLLMAIHandler(BaseAiHandler):
     """
     This class handles interactions with the OpenAI API for chat completions.
     It initializes the API key and other settings from a configuration file,
@@ -100,11 +101,6 @@ class AiHandler:
         """
         try:
             deployment_id = self.deployment_id
-            if get_settings().config.verbosity_level >= 2:
-                get_logger().debug(
-                    f"Generating completion with {model}"
-                    f"{(' from deployment ' + deployment_id) if deployment_id else ''}"
-                )
             if self.azure:
                 model = 'azure/' + model
             messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
