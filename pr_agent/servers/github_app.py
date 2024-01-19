@@ -212,6 +212,9 @@ def _check_pull_request_event(action: str, body: dict, log_context: dict, bot_us
     if action in ("review_requested", "synchronize") and pull_request.get("created_at") == pull_request.get("updated_at"):
         # avoid double reviews when opening a PR for the first time
         return invalid_result
+    # avoid reviewing PRs that are not targeting the dev branches
+    if pull_request.get("base") in ["master", "main", "qa", "staging"]:
+        return invalid_result
     return pull_request, api_url
 
 
