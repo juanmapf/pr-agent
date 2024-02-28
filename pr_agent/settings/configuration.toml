@@ -18,9 +18,6 @@ cli_mode=false
 ai_disclaimer_title=""  # Pro feature, title for a collapsible disclaimer to AI outputs
 ai_disclaimer=""  # Pro feature, full text for the AI disclaimer
 
-[replicate]
-key="r8_Feqs6CF4huCHI6zS0ARI0u3Izf3kM6t0pixJA"
-
 [pr_reviewer] # /review #
 # enable/disable features
 require_focused_review=false
