@@ -5,9 +5,9 @@ from typing import List, Optional, Tuple
 from urllib.parse import urlparse
 
 from pr_agent.git_providers.codecommit_client import CodeCommitClient
-
+from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from ..algo.utils import load_large_diff
-from .git_provider import EDIT_TYPE, FilePatchInfo, GitProvider
+from .git_provider import GitProvider
 from ..config_loader import get_settings
 from ..log import get_logger
 
@@ -297,7 +297,7 @@ class CodeCommitProvider(GitProvider):
         settings_filename = ".pr_agent.toml"
         return self.codecommit_client.get_file(self.repo_name, settings_filename, self.pr.source_commit, optional=True)
 
-    def add_eyes_reaction(self, issue_comment_id: int) -> Optional[int]:
+    def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False) -> Optional[int]:
         get_logger().info("CodeCommit provider does not support eyes reaction yet")
         return True
 

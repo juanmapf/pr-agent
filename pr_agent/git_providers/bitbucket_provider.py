@@ -6,10 +6,11 @@ import requests
 from atlassian.bitbucket import Cloud
 from starlette_context import context
 
-from ..algo.pr_processing import find_line_number_of_relevant_line_in_file
+from pr_agent.algo.types import FilePatchInfo, EDIT_TYPE
+from ..algo.utils import find_line_number_of_relevant_line_in_file
 from ..config_loader import get_settings
 from ..log import get_logger
-from .git_provider import FilePatchInfo, GitProvider, EDIT_TYPE
+from .git_provider import GitProvider
 
 
 class BitbucketProvider(GitProvider):
@@ -159,7 +160,7 @@ class BitbucketProvider(GitProvider):
     def get_comment_url(self, comment):
         return comment.data['links']['html']['href']
 
-    def publish_persistent_comment(self, pr_comment: str, initial_header: str, update_header: bool = True):
+    def publish_persistent_comment(self, pr_comment: str, initial_header: str, update_header: bool = True, name='review'):
         try:
             for comment in self.pr.comments():
                 body = comment.raw
@@ -167,15 +168,15 @@ class BitbucketProvider(GitProvider):
                     latest_commit_url = self.get_latest_commit_url()
                     comment_url = self.get_comment_url(comment)
                     if update_header:
-                        updated_header = f"{initial_header}\n\n### (review updated until commit {latest_commit_url})\n"
+                        updated_header = f"{initial_header}\n\n### ({name.capitalize()} updated until commit {latest_commit_url})\n"
                         pr_comment_updated = pr_comment.replace(initial_header, updated_header)
                     else:
                         pr_comment_updated = pr_comment
-                    get_logger().info(f"Persistent mode- updating comment {comment_url} to latest review message")
+                    get_logger().info(f"Persistent mode - updating comment {comment_url} to latest {name} message")
                     d = {"content": {"raw": pr_comment_updated}}
                     response = comment._update_data(comment.put(None, data=d))
                     self.publish_comment(
-                        f"**[Persistent review]({comment_url})** updated to latest commit {latest_commit_url}")
+                        f"**[Persistent {name}]({comment_url})** updated to latest commit {latest_commit_url}")
                     return
         except Exception as e:
             get_logger().exception(f"Failed to update persistent review, error: {e}")
@@ -186,6 +187,13 @@ class BitbucketProvider(GitProvider):
         comment = self.pr.comment(pr_comment)
         if is_temporary:
             self.temp_comments.append(comment["id"])
+        return comment
+
+    def edit_comment(self, comment, body: str):
+        try:
+            comment.update(body)
+        except Exception as e:
+            get_logger().exception(f"Failed to update comment, error: {e}")
 
     def remove_initial_comment(self):
         try:
@@ -239,8 +247,8 @@ class BitbucketProvider(GitProvider):
 
     def generate_link_to_relevant_line_number(self, suggestion) -> str:
         try:
-            relevant_file = suggestion['relevant file'].strip('`').strip("'")
-            relevant_line_str = suggestion['relevant line']
+            relevant_file = suggestion['relevant_file'].strip('`').strip("'").rstrip()
+            relevant_line_str = suggestion['relevant_line'].rstrip()
             if not relevant_line_str:
                 return ""
 
@@ -290,7 +298,7 @@ class BitbucketProvider(GitProvider):
             "Bitbucket provider does not support issue comments yet"
         )
 
-    def add_eyes_reaction(self, issue_comment_id: int) -> Optional[int]:
+    def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False) -> Optional[int]:
         return True
 
     def remove_reaction(self, issue_comment_id: int, reaction_id: int) -> bool:

@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import difflib
-import re
 import traceback
-from typing import Any, Callable, List, Tuple
+from typing import Callable, List, Tuple
 
 from github import RateLimitExceededException
 
@@ -11,9 +9,10 @@ from pr_agent.algo.git_patch_processing import convert_to_hunks_with_lines_numbe
 from pr_agent.algo.language_handler import sort_files_by_main_languages
 from pr_agent.algo.file_filter import filter_ignored
 from pr_agent.algo.token_handler import TokenHandler
-from pr_agent.algo.utils import get_max_tokens
+from pr_agent.algo.utils import get_max_tokens, ModelType
 from pr_agent.config_loader import get_settings
-from pr_agent.git_providers.git_provider import FilePatchInfo, GitProvider, EDIT_TYPE
+from pr_agent.git_providers.git_provider import GitProvider
+from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.log import get_logger
 
 DELETED_FILES_ = "Deleted files:\n"
@@ -51,15 +50,29 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler, model: s
         PATCH_EXTRA_LINES = get_settings().config.patch_extra_lines
 
     try:
-        diff_files = git_provider.get_diff_files()
+        diff_files_original = git_provider.get_diff_files()
     except RateLimitExceededException as e:
         get_logger().error(f"Rate limit exceeded for git provider API. original message {e}")
         raise
 
-    diff_files = filter_ignored(diff_files)
+    diff_files = filter_ignored(diff_files_original)
+    if diff_files != diff_files_original:
+        try:
+            get_logger().info(f"Filtered out {len(diff_files_original) - len(diff_files)} files")
+            new_names = set([a.filename for a in diff_files])
+            orig_names = set([a.filename for a in diff_files_original])
+            get_logger().info(f"Filtered out files: {orig_names - new_names}")
+        except Exception as e:
+            pass
+
 
     # get pr languages
     pr_languages = sort_files_by_main_languages(git_provider.get_languages(), diff_files)
+    if pr_languages:
+        try:
+            get_logger().info(f"PR main language: {pr_languages[0]['language']}")
+        except Exception as e:
+            pass
 
     # generate a standard diff string, with patch extension
     patches_extended, total_tokens, patches_extended_tokens = pr_generate_extended_diff(
@@ -67,9 +80,13 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler, model: s
 
     # if we are under the limit, return the full diff
     if total_tokens + OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD < get_max_tokens(model):
+        get_logger().info(f"Tokens: {total_tokens}, total tokens under limit: {get_max_tokens(model)}, "
+                          f"returning full diff.")
         return "\n".join(patches_extended)
 
     # if we are over the limit, start pruning
+    get_logger().info(f"Tokens: {total_tokens}, total tokens over limit: {get_max_tokens(model)}, "
+                      f"pruning diff.")
     patches_compressed, modified_file_names, deleted_file_names, added_file_names = \
         pr_generate_compressed_diff(pr_languages, token_handler, model, add_line_numbers_to_hunks)
 
@@ -83,6 +100,11 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler, model: s
     if deleted_file_names:
         deleted_list_str = DELETED_FILES_ + "\n".join(deleted_file_names)
         final_diff = final_diff + "\n\n" + deleted_list_str
+    try:
+        get_logger().debug(f"After pruning, added_list_str: {added_list_str}, modified_list_str: {modified_list_str}, "
+                          f"deleted_list_str: {deleted_list_str}")
+    except Exception as e:
+        pass
     return final_diff
 
 
@@ -209,9 +231,9 @@ def pr_generate_compressed_diff(top_langs: list, token_handler: TokenHandler, mo
 
         if patch:
             if not convert_hunks_to_line_numbers:
-                patch_final = f"## {file.filename}\n\n{patch}\n"
+                patch_final = f"\n\n## file: '{file.filename.strip()}\n\n{patch.strip()}\n'"
             else:
-                patch_final = patch
+                patch_final = "\n\n" + patch.strip()
             patches.append(patch_final)
             total_tokens += token_handler.count_tokens(patch_final)
             if get_settings().config.verbosity_level >= 2:
@@ -220,20 +242,19 @@ def pr_generate_compressed_diff(top_langs: list, token_handler: TokenHandler, mo
     return patches, modified_files_list, deleted_files_list, added_files_list
 
 
-async def retry_with_fallback_models(f: Callable):
-    all_models = _get_all_models()
+async def retry_with_fallback_models(f: Callable, model_type: ModelType = ModelType.REGULAR):
+    all_models = _get_all_models(model_type)
     all_deployments = _get_all_deployments(all_models)
     # try each (model, deployment_id) pair until one is successful, otherwise raise exception
     for i, (model, deployment_id) in enumerate(zip(all_models, all_deployments)):
         try:
-            if get_settings().config.verbosity_level >= 2:
-                get_logger().debug(
-                    f"Generating prediction with {model}"
-                    f"{(' from deployment ' + deployment_id) if deployment_id else ''}"
-                )
+            get_logger().debug(
+                f"Generating prediction with {model}"
+                f"{(' from deployment ' + deployment_id) if deployment_id else ''}"
+            )
             get_settings().set("openai.deployment_id", deployment_id)
             return await f(model)
-        except Exception as e:
+        except:
             get_logger().warning(
                 f"Failed to generate prediction with {model}"
                 f"{(' from deployment ' + deployment_id) if deployment_id else ''}: "
@@ -243,8 +264,11 @@ async def retry_with_fallback_models(f: Callable):
                 raise  # Re-raise the last exception
 
 
-def _get_all_models() -> List[str]:
-    model = get_settings().config.model
+def _get_all_models(model_type: ModelType = ModelType.REGULAR) -> List[str]:
+    if model_type == ModelType.TURBO:
+        model = get_settings().config.model_turbo
+    else:
+        model = get_settings().config.model
     fallback_models = get_settings().config.fallback_models
     if not isinstance(fallback_models, list):
         fallback_models = [m.strip() for m in fallback_models.split(",")]
@@ -265,78 +289,6 @@ def _get_all_deployments(all_models: List[str]) -> List[str]:
     else:
         all_deployments = [deployment_id] * len(all_models)
     return all_deployments
-
-
-def find_line_number_of_relevant_line_in_file(diff_files: List[FilePatchInfo],
-                                              relevant_file: str,
-                                              relevant_line_in_file: str,
-                                              absolute_position: int = None) -> Tuple[int, int]:
-    position = -1
-    if absolute_position is None:
-        absolute_position = -1
-    re_hunk_header = re.compile(
-        r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@[ ]?(.*)")
-
-    for file in diff_files:
-        if file.filename and (file.filename.strip() == relevant_file):
-            patch = file.patch
-            patch_lines = patch.splitlines()
-            delta = 0
-            start1, size1, start2, size2 = 0, 0, 0, 0
-            if absolute_position != -1: # matching absolute to relative
-                for i, line in enumerate(patch_lines):
-                    # new hunk
-                    if line.startswith('@@'):
-                        delta = 0
-                        match = re_hunk_header.match(line)
-                        start1, size1, start2, size2 = map(int, match.groups()[:4])
-                    elif not line.startswith('-'):
-                        delta += 1
-
-                    #
-                    absolute_position_curr = start2 + delta - 1
-
-                    if absolute_position_curr == absolute_position:
-                        position = i
-                        break
-            else:
-                # try to find the line in the patch using difflib, with some margin of error
-                matches_difflib: list[str | Any] = difflib.get_close_matches(relevant_line_in_file,
-                                                                             patch_lines, n=3, cutoff=0.93)
-                if len(matches_difflib) == 1 and matches_difflib[0].startswith('+'):
-                    relevant_line_in_file = matches_difflib[0]
-
-
-                for i, line in enumerate(patch_lines):
-                    if line.startswith('@@'):
-                        delta = 0
-                        match = re_hunk_header.match(line)
-                        start1, size1, start2, size2 = map(int, match.groups()[:4])
-                    elif not line.startswith('-'):
-                        delta += 1
-
-                    if relevant_line_in_file in line and line[0] != '-':
-                        position = i
-                        absolute_position = start2 + delta - 1
-                        break
-
-                if position == -1 and relevant_line_in_file[0] == '+':
-                    no_plus_line = relevant_line_in_file[1:].lstrip()
-                    for i, line in enumerate(patch_lines):
-                        if line.startswith('@@'):
-                            delta = 0
-                            match = re_hunk_header.match(line)
-                            start1, size1, start2, size2 = map(int, match.groups()[:4])
-                        elif not line.startswith('-'):
-                            delta += 1
-
-                        if no_plus_line in line and line[0] != '-':
-                            # The model might add a '+' to the beginning of the relevant_line_in_file even if originally
-                            # it's a context line
-                            position = i
-                            absolute_position = start2 + delta - 1
-                            break
-    return position, absolute_position
 
 
 def get_pr_multi_diffs(git_provider: GitProvider,
@@ -375,6 +327,13 @@ def get_pr_multi_diffs(git_provider: GitProvider,
     for lang in pr_languages:
         sorted_files.extend(sorted(lang['files'], key=lambda x: x.tokens, reverse=True))
 
+
+    # try first a single run with standard diff string, with patch extension, and no deletions
+    patches_extended, total_tokens, patches_extended_tokens = pr_generate_extended_diff(
+        pr_languages, token_handler, add_line_numbers_to_hunks=True)
+    if total_tokens + OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD < get_max_tokens(model):
+        return ["\n".join(patches_extended)]
+
     patches = []
     final_diff_list = []
     total_tokens = token_handler.prompt_tokens
@@ -398,6 +357,11 @@ def get_pr_multi_diffs(git_provider: GitProvider,
 
         patch = convert_to_hunks_with_lines_numbers(patch, file)
         new_patch_tokens = token_handler.count_tokens(patch)
+
+        if patch and (token_handler.prompt_tokens + new_patch_tokens) > get_max_tokens(model) - OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD:
+            get_logger().warning(f"Patch too large, skipping: {file.filename}")
+            continue
+
         if patch and (total_tokens + new_patch_tokens > get_max_tokens(model) - OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD):
             final_diff = "\n".join(patches)
             final_diff_list.append(final_diff)

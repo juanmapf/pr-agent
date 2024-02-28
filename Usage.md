@@ -6,7 +6,9 @@
 - [Online Usage](#online-usage)
 - [GitHub App](#working-with-github-app)
 - [GitHub Action](#working-with-github-action)
+- [GitLab Webhook](#working-with-gitlab-webhook)
 - [BitBucket App](#working-with-bitbucket-self-hosted-app)
+- [Azure DevOps Provider](#azure-devops-provider)
 - [Additional Configurations Walkthrough](#appendix---additional-configurations-walkthrough)
 
 ### Introduction
@@ -100,7 +102,7 @@ python -m pr_agent.cli --pr_url=<pr_url>  /review --pr_reviewer.extra_instructio
 (2) You can print results locally, without publishing them, by setting in `configuration.toml`:
 ```
 [config]
-publish_output=true
+publish_output=false
 verbosity_level=2
 ```
 This is useful for debugging or experimenting with different tools.
@@ -142,28 +144,20 @@ num_code_suggestions=1
 Then you will overwrite the default number of code suggestions to 1.
 
 #### GitHub app automatic tools
-The [github_app](pr_agent/settings/configuration.toml#L76) section defines GitHub app-specific configurations.  
-In this section, you can define configurations to control the conditions for which tools will **run automatically**.  
+The [github_app](pr_agent/settings/configuration.toml#L108) section defines GitHub app specific configurations.  
 
-##### GitHub app automatic tools for PR actions
-The GitHub app can respond to the following actions on a PR:
-1. `opened` - Opening a new PR
-2. `reopened` - Reopening a closed PR
-3. `ready_for_review` - Moving a PR from Draft to Open
-4. `review_requested` - Specifically requesting review (in the PR reviewers list) from the `github-actions[bot]` user
-
-The configuration parameter `handle_pr_actions` defines the list of actions for which the GitHub app will trigger the PR-Agent.  
-The configuration parameter `pr_commands` defines the list of tools that will be **run automatically** when one of the above actions happens (e.g., a new PR is opened):
+##### GitHub app automatic tools for PR actions 
+The configuration parameter `pr_commands` defines the list of tools that will be **run automatically** when a new PR is opened.
 ```
 [github_app]
-handle_pr_actions = ['opened', 'reopened', 'ready_for_review', 'review_requested']
 pr_commands = [
     "/describe --pr_description.add_original_user_description=true --pr_description.keep_original_user_title=true",
-    "/review",
+    "/review --pr_reviewer.num_code_suggestions=0",
+    "/improve",
 ]
 ```
-This means that when a new PR is opened/reopened or marked as ready for review, PR-Agent will run the `describe` and `review` tools.  
-For the `describe` tool, the `add_original_user_description` and `keep_original_user_title` parameters will be set to true.
+This means that when a new PR is opened/reopened or marked as ready for review, PR-Agent will run the `describe`, `review` and `improve` tools.  
+For the `describe` tool, for example, the `add_original_user_description` and `keep_original_user_title` parameters will be set to true.
 
 You can override the default tool parameters by uploading a local configuration file called `.pr_agent.toml` to the root of your repo.
 For example, if your local `.pr_agent.toml` file contains:
@@ -180,7 +174,14 @@ To cancel the automatic run of all the tools, set:
 handle_pr_actions = []
 ```
 
-##### GitHub app automatic tools for new code (PR push)
+You can also disable automatic runs for PRs with specific titles, by setting the `ignore_pr_titles` parameter with the relevant regex. For example:
+```
+[github_app]
+ignore_pr_title = ["^[Auto]", ".*ignore.*"]
+```
+will ignore PRs with titles that start with "Auto" or contain the word "ignore".
+
+##### GitHub app automatic tools for push actions (commits to an open PR)
 In addition to running automatic tools when a PR is opened, the GitHub app can also respond to new code that is pushed to an open PR.
 
 The configuration toggle `handle_push_trigger` can be used to enable this feature.  
@@ -216,19 +217,26 @@ user="""
 ```
 Note that the new prompt will need to generate an output compatible with the relevant [post-process function](./pr_agent/tools/pr_description.py#L137).
 
+#### Managing notifications
+If you are subscribed to notifications for a repo with PR-Agent, we recommend turning off notifications for PR comments, to avoid lengthy emails:
+
+<kbd><img src="https://codium.ai/images/pr_agent/notifications.png" width="512"></kbd>
+
+
 ### Working with GitHub Action
-You can configure settings in GitHub action by adding environment variables under the env section in `.github/workflows/pr_agent.yml` file. 
+`GitHub Action` is a different way to trigger PR-Agent tools, and uses a different configuration mechanism than `GitHub App`.
+You can configure settings for `GitHub Action` by adding environment variables under the env section in `.github/workflows/pr_agent.yml` file. 
 Specifically, start by setting the following environment variables:
 ```yaml
       env:
         OPENAI_KEY: ${{ secrets.OPENAI_KEY }} # Make sure to add your OpenAI key to your repo secrets
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # Make sure to add your GitHub token to your repo secrets
-        github_action.auto_review: "true" # enable\disable auto review
-        github_action.auto_describe: "true" # enable\disable auto describe
-        github_action.auto_improve: "false" # enable\disable auto improve
+        github_action_config.auto_review: "true" # enable\disable auto review
+        github_action_config.auto_describe: "true" # enable\disable auto describe
+        github_action_config.auto_improve: "true" # enable\disable auto improve
 ```
-`github_action.auto_review`, `github_action.auto_describe` and `github_action.auto_improve` are used to enable/disable automatic tools that run when a new PR is opened.
-If not set, the default option is that only the `review` tool will run automatically when a new PR is opened.
+`github_action_config.auto_review`, `github_action_config.auto_describe` and `github_action_config.auto_improve` are used to enable/disable automatic tools that run when a new PR is opened.
+If not set, the default configuration is for all three tools to run automatically when a new PR is opened.
 
 Note that you can give additional config parameters by adding environment variables to `.github/workflows/pr_agent.yml`, or by using a `.pr_agent.toml` file in the root of your repo, similar to the GitHub App usage.
 
@@ -236,6 +244,16 @@ For example, you can set an environment variable: `pr_description.add_original_u
 ```
 [pr_description]
 add_original_user_description = false
+```
+### Working with GitLab Webhook
+After setting up a GitLab webhook, to control which commands will run automatically when a new PR is opened, you can set the `pr_commands` parameter in the configuration file, similar to the GitHub App:
+```
+[gitlab]
+pr_commands = [
+    "/describe --pr_description.add_original_user_description=true --pr_description.keep_original_user_title=true",
+    "/review --pr_reviewer.num_code_suggestions=0",
+    "/improve",
+]
 ```
 
 ### Working with BitBucket Self-Hosted App
@@ -267,6 +285,52 @@ If not set, the default option is that only the `review` tool will run automatic
 
 Note that due to limitations of the bitbucket platform, the `auto_describe` tool will be able to publish a PR description only as a comment. 
 In addition, some subsections like `PR changes walkthrough` will not appear, since they require the usage of collapsible sections, which are not supported by bitbucket.
+
+### Azure DevOps provider
+
+To use Azure DevOps provider use the following settings in configuration.toml:
+```
+[config]
+git_provider="azure"
+use_repo_settings_file=false
+```
+
+Azure DevOps provider supports [PAT token](https://learn.microsoft.com/en-us/azure/devops/organizations/accounts/use-personal-access-tokens-to-authenticate?view=azure-devops&tabs=Windows) or [DefaultAzureCredential](https://learn.microsoft.com/en-us/azure/developer/python/sdk/authentication-overview#authentication-in-server-environments) authentication.
+PAT is faster to create, but has build in experation date, and will use the user identity for API calls. 
+Using DefaultAzureCredential you can use managed identity or Service principle, which are more secure and will create seperate ADO user identity (via AAD) to the agent.
+
+If PAT was choosen, you can assign the value in .secrets.toml. 
+If DefaultAzureCredential was choosen, you can assigned the additional env vars like AZURE_CLIENT_SECRET directly, 
+or use managed identity/az cli (for local develpment) without any additional configuration.
+in any case, 'org' value must be assigned in .secrets.toml:
+```
+[azure_devops]
+org = "https://dev.azure.com/YOUR_ORGANIZATION/"
+# pat = "YOUR_PAT_TOKEN" needed only if using PAT for authentication
+```
+
+##### Azure DevOps Webhook
+To trigger from an Azure webhook, you need to manually [add a webhook](https://learn.microsoft.com/en-us/azure/devops/service-hooks/services/webhooks?view=azure-devops). 
+Use the "Pull request created" type to trigger a review, or "Pull request commented on" to trigger any supported comment with /<command> <args> comment on the relevant PR. Note that for the "Pull request commented on" trigger, only API v2.0 is supported.
+
+To control which commands will run automatically when a new PR is opened, you can set the `pr_commands` parameter in the configuration file, similar to the GitHub App:
+```
+[azure_devops_server]
+pr_commands = [
+    "/describe --pr_description.add_original_user_description=true --pr_description.keep_original_user_title=true",
+    "/review --pr_reviewer.num_code_suggestions=0",
+    "/improve",
+]
+```
+
+For webhook security, create a sporadic username/password pair and configure the webhook username and password on both the server and Azure DevOps webhook. These will be sent as basic Auth data by the webhook with each request:
+```
+[azure_devops_server]
+webhook_username = "<basic auth user>"
+webhook_password = "<basic auth password>"
+```
+> :warning: **Ensure that the webhook endpoint is only accessible over HTTPS** to mitigate the risk of credential interception when using basic authentication.
+
 
 ### Appendix - additional configurations walkthrough
 
@@ -432,19 +496,3 @@ patch_extra_lines=3
 
 Increasing this number provides more context to the model, but will also increase the token budget.
 If the PR is too large (see [PR Compression strategy](./PR_COMPRESSION.md)), PR-Agent automatically sets this number to 0, using the original git patch.
-
-
-#### Azure DevOps provider
-To use Azure DevOps provider use the following settings in configuration.toml:
-```
-[config]
-git_provider="azure"
-use_repo_settings_file=false
-```
-
-And use the following settings (you have to replace the values) in .secrets.toml:
-```
-[azure_devops]
-org = "https://dev.azure.com/YOUR_ORGANIZATION/"
-pat = "YOUR_PAT_TOKEN"
-```

@@ -7,10 +7,10 @@ import gitlab
 from gitlab import GitlabGetError
 
 from ..algo.language_handler import is_valid_file
-from ..algo.pr_processing import find_line_number_of_relevant_line_in_file
-from ..algo.utils import load_large_diff, clip_tokens
+from ..algo.utils import load_large_diff, clip_tokens, find_line_number_of_relevant_line_in_file
 from ..config_loader import get_settings
-from .git_provider import EDIT_TYPE, FilePatchInfo, GitProvider
+from .git_provider import GitProvider
+from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from ..log import get_logger
 
 
@@ -151,21 +151,21 @@ class GitLabProvider(GitProvider):
     def get_comment_url(self, comment):
         return f"{self.mr.web_url}#note_{comment.id}"
 
-    def publish_persistent_comment(self, pr_comment: str, initial_header: str, update_header: bool = True):
+    def publish_persistent_comment(self, pr_comment: str, initial_header: str, update_header: bool = True, name='review'):
         try:
             for comment in self.mr.notes.list(get_all=True)[::-1]:
                 if comment.body.startswith(initial_header):
                     latest_commit_url = self.get_latest_commit_url()
                     comment_url = self.get_comment_url(comment)
                     if update_header:
-                        updated_header = f"{initial_header}\n\n### (review updated until commit {latest_commit_url})\n"
+                        updated_header = f"{initial_header}\n\n### ({name.capitalize()} updated until commit {latest_commit_url})\n"
                         pr_comment_updated = pr_comment.replace(initial_header, updated_header)
                     else:
                         pr_comment_updated = pr_comment
-                    get_logger().info(f"Persistent mode- updating comment {comment_url} to latest review message")
+                    get_logger().info(f"Persistent mode - updating comment {comment_url} to latest {name} message")
                     response = self.mr.notes.update(comment.id, {'body': pr_comment_updated})
                     self.publish_comment(
-                        f"**[Persistent review]({comment_url})** updated to latest commit {latest_commit_url}")
+                        f"**[Persistent {name}]({comment_url})** updated to latest commit {latest_commit_url}")
                     return
         except Exception as e:
             get_logger().exception(f"Failed to update persistent review, error: {e}")
@@ -176,6 +176,14 @@ class GitLabProvider(GitProvider):
         comment = self.mr.notes.create({'body': mr_comment})
         if is_temporary:
             self.temp_comments.append(comment)
+        return comment
+
+    def edit_comment(self, comment, body: str):
+        self.mr.notes.update(comment.id,{'body': body} )
+
+    def reply_to_comment_from_comment_id(self, comment_id: int, body: str):
+        discussion = self.mr.discussions.get(comment_id)
+        discussion.notes.create({'body': body})
 
     def publish_inline_comment(self, body: str, relevant_file: str, relevant_line_in_file: str):
         edit_type, found, source_line_no, target_file, target_line_no = self.search_line(relevant_file,
@@ -360,7 +368,7 @@ class GitLabProvider(GitProvider):
         except Exception:
             return ""
 
-    def add_eyes_reaction(self, issue_comment_id: int) -> Optional[int]:
+    def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False) -> Optional[int]:
         return True
 
     def remove_reaction(self, issue_comment_id: int, reaction_id: int) -> bool:
@@ -450,8 +458,8 @@ class GitLabProvider(GitProvider):
 
     def generate_link_to_relevant_line_number(self, suggestion) -> str:
         try:
-            relevant_file = suggestion['relevant file'].strip('`').strip("'")
-            relevant_line_str = suggestion['relevant line']
+            relevant_file = suggestion['relevant_file'].strip('`').strip("'").rstrip()
+            relevant_line_str = suggestion['relevant_line'].rstrip()
             if not relevant_line_str:
                 return ""
 

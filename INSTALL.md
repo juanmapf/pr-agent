@@ -14,7 +14,6 @@ There are several ways to use PR-Agent:
 
 **GitHub specific methods**
 - [Run as a GitHub Action](INSTALL.md#run-as-a-github-action)
-- [Run as a polling server](INSTALL.md#run-as-a-polling-server)
 - [Run as a GitHub App](INSTALL.md#run-as-a-github-app)
 - [Deploy as a Lambda Function](INSTALL.md#deploy-as-a-lambda-function)
 - [AWS CodeCommit](INSTALL.md#aws-codecommit-setup)
@@ -124,7 +123,16 @@ You can use our pre-built Github Action Docker image to run PR-Agent as a Github
 ```yaml
 on:
   pull_request:
+    types:
+      - opened
+      - reopened
+      - ready_for_review
+      - review_requested
+
   issue_comment:
+    types:
+      - created
+      - edited
 jobs:
   pr_agent_job:
     runs-on: ubuntu-latest
@@ -145,7 +153,16 @@ jobs:
 ```yaml
 on:
   pull_request:
+    types:
+      - opened
+      - reopened
+      - ready_for_review
+      - review_requested
+
   issue_comment:
+    types:
+      - created
+      - edited
 
 jobs:
   pr_agent_job:
@@ -182,19 +199,6 @@ When you open your next PR, you should see a comment from `github-actions` bot w
         OPENAI.ORG: "<Your organization name under your OpenAI account>"
         PR_REVIEWER.REQUIRE_TESTS_REVIEW: "false" # Disable tests review
         PR_CODE_SUGGESTIONS.NUM_CODE_SUGGESTIONS: 6 # Increase number of code suggestions
-```
-
----
-
-### Run as a polling server
-Request reviews by tagging your GitHub user on a PR
-
-Follow [steps 1-3](#run-as-a-github-action) of the GitHub Action setup.
-
-Run the following command to start the server:
-
-```
-python pr_agent/servers/github_polling.py
 ```
 
 ---
@@ -383,14 +387,14 @@ PYTHONPATH="/PATH/TO/PROJECTS/pr-agent" python pr_agent/cli.py \
 ```
 WEBHOOK_SECRET=$(python -c "import secrets; print(secrets.token_hex(10))")
 ```
-3. Follow the instructions to build the Docker image, setup a secrets file and deploy on your own server from [Method 5](#run-as-a-github-app) steps 4-7.
+3. Follow the instructions to build the Docker image, setup a secrets file and deploy on your own server from [Method 5](#run-as-a-github-app) steps 4-7. Be sure to set the target to `gitlab_webhook` instead of `github_app` when building the Docker image.
 4. In the secrets file, fill in the following:
     - Your OpenAI key.
     - In the [gitlab] section, fill in personal_access_token and shared_secret. The access token can be a personal access token, or a group or project access token.
     - Set deployment_type to 'gitlab' in [configuration.toml](./pr_agent/settings/configuration.toml)
-5. Create a webhook in GitLab. Set the URL to the URL of your app's server. Set the secret token to the generated secret from step 2.
+5. Create a webhook in GitLab. Set the URL to the URL of your app's server with the path `/webhook` (e.g. `http://pr-agent.example.com:3000/webhook`). Set the secret token to the generated secret from step 2.
 In the "Trigger" section, check the ‘comments’ and ‘merge request events’ boxes.
-6. Test your installation by opening a merge request or commenting or a merge request using one of CodiumAI's commands.
+6. Test your installation by opening a merge request or commenting on a merge request using one of CodiumAI's commands.
 
 
 

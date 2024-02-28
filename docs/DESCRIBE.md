@@ -20,7 +20,7 @@ For example:
 ___
 <kbd><img src=https://codium.ai/images/pr_agent/describe_comment.png width="768"></kbd>
 ___
-<kbd><img src=https://codium.ai/images/pr_agent/describe.png width="768"></kbd>
+<kbd><img src=https://codium.ai/images/pr_agent/describe_new.png width="768"></kbd>
 ___
   
 ### Configuration options
@@ -34,9 +34,9 @@ To edit [configurations](./../pr_agent/settings/configuration.toml#L46) related 
 
 - `publish_description_as_comment`: if set to true, the tool will publish the description as a comment to the PR. If false, it will overwrite the origianl description. Default is false.
 
-- `add_original_user_description`: if set to true, the tool will add the original user description to the generated description. Default is false.
+- `add_original_user_description`: if set to true, the tool will add the original user description to the generated description. Default is true.
 
-- `keep_original_user_title`: if set to true, the tool will keep the original PR title, and won't change it. Default is false.
+- `keep_original_user_title`: if set to true, the tool will keep the original PR title, and won't change it. Default is true.
 
 - `extra_instructions`: Optional extra instructions to the tool. For example: "focus on the changes in the file X. Ignore change in ...".
 
@@ -50,14 +50,25 @@ To edit [configurations](./../pr_agent/settings/configuration.toml#L46) related 
 - `collapsible_file_list`: if set to true, the file list in the "Changes walkthrough" section will be collapsible. If set to "adaptive", the file list will be collapsible only if there are more than 8 files. Default is "adaptive".
   
 ### Inline file summary 💎
-To enable inline file summary, set `pr_description.inline_file_summary=true` in the configuration file.
+> This feature is available only in PR-Agent Pro
 
-When the feature is enabled, PR-Agent Pro will add a collapsable summary of each file change in the "Files changed" tab.
-This will enable you to quickly understand the changes in each file, while reviewing the code changes (diff view).
+This feature will enable you to quickly understand the changes in each file while reviewing the code changes (diff view).
 
-<kbd><img src=https://codium.ai/images/pr_agent/diffview_changes.png width="1024"></kbd>
+To add the walkthrough table to the "Files changed" tab, you can click on the checkbox that appears PR Description status message below the main PR Description:
 
-*Note that this feature is currently available only for GitHub.
+<kbd><img src=https://codium.ai/images/pr_agent/add_table_checkbox.png width="512"></kbd>
+
+If you prefer to have the file summaries appear in the "Files changed" tab on every PR, change the `pr_description.inline_file_summary` parameter in the configuration file, possible values are:
+
+- `'table'`: File changes walkthrough table will be displayed on the top of the "Files changed" tab, in addition to the "Conversation" tab.
+<kbd><img src=https://codium.ai/images/pr_agent/diffview-table.png width="768"></kbd>
+
+- `true`: A collapsable file comment with changes title and a changes summary for each file in the PR.
+<kbd><img src=https://codium.ai/images/pr_agent/diffview_changes.png width="768"></kbd>
+
+- `false` (`default`): File changes walkthrough will be added only to the "Conversation" tab.
+
+Note that this feature is currently available only for GitHub.
 
 
 ### Handle custom labels from the Repo's labels page :gem:
@@ -78,7 +89,7 @@ The description should be comprehensive and detailed, indicating when to add the
 
 ### Markers template
 To enable markers, set `pr_description.use_description_markers=true`.
-markers enable to easily integrate user's content and auto-generated content, with a template-like mechanism.
+Markers enable to easily integrate user's content and auto-generated content, with a template-like mechanism.
 
 For example, if the PR original description was:
 ```

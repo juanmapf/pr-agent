@@ -13,7 +13,8 @@ import urllib3.util
 from git import Repo
 
 from pr_agent.config_loader import get_settings
-from pr_agent.git_providers.git_provider import EDIT_TYPE, FilePatchInfo, GitProvider
+from pr_agent.git_providers.git_provider import GitProvider
+from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.git_providers.local_git_provider import PullRequestMimic
 from pr_agent.log import get_logger
 
@@ -211,7 +212,7 @@ class GerritProvider(GitProvider):
         raise NotImplementedError(
             'Getting labels is not implemented for the gerrit provider')
 
-    def add_eyes_reaction(self, issue_comment_id: int):
+    def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False):
         raise NotImplementedError(
             'Adding reactions is not implemented for the gerrit provider')
 
