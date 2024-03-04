@@ -1,5 +1,5 @@
 [config]
-model="replicate/llama-2-70b-chat:2c1608e18606fad2812020dc541930f2d0495ce32eee50074220b87300bc16e1"
+model="replicate/llama-2-70b-chat"
 fallback_models=["gpt-3.5-turbo-16k"]
 git_provider="github"
 publish_output=true
