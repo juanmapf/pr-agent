@@ -14,6 +14,7 @@ MAX_TOKENS = {
     'claude-2': 100000,
     'command-nightly': 4096,
     'replicate/llama-2-70b-chat:2c1608e18606fad2812020dc541930f2d0495ce32eee50074220b87300bc16e1': 4096,
+    'replicate/meta/llama-2-70b-chat:02e509c789964a7ea8736978a43525956ef40397be9033abf9fd2badfe68c9e3': 4096,
     'replicate/meta/llama-2-70b-chat': 4096,
     'meta-llama/Llama-2-7b-chat-hf': 4096,
     'vertex_ai/codechat-bison': 6144,
