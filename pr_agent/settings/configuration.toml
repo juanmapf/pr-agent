@@ -87,17 +87,12 @@ collapsible_file_list='adaptive' # true, false, 'adaptive'
 inline_file_summary=false # false, true, 'table'
 # markers
 use_description_markers=false
-<<<<<<< HEAD
 include_generated_by_header=false
-
-=======
-include_generated_by_header=true
 # large pr mode 💎
 enable_large_pr_handling=true
 max_ai_calls=4
 async_ai_calls=true
 mention_extra_files=true
->>>>>>> cd526a233c0077ea4c6398576d99de2de4e1998e
 #custom_labels = ['Bug fix', 'Tests', 'Bug fix with tests', 'Enhancement', 'Documentation', 'Other']
 
 [pr_questions] # /ask #
@@ -200,11 +195,7 @@ app_name = "pr-agent"
 
 [github_app]
 # these toggles allows running the github app from custom deployments
-<<<<<<< HEAD
 bot_user = "kai-pr-agent[bot]"
-=======
-bot_user = "github-actions[bot]"
->>>>>>> cd526a233c0077ea4c6398576d99de2de4e1998e
 override_deployment_type = true
 # settings for "pull_request" event
 handle_pr_actions = ['opened', 'reopened', 'ready_for_review']
