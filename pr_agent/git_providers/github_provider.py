@@ -1,3 +1,4 @@
+import itertools
 import time
 import hashlib
 from datetime import datetime
@@ -8,24 +9,28 @@ from github import AppAuthentication, Auth, Github, GithubException
 from retry import retry
 from starlette_context import context
 
+from ..algo.file_filter import filter_ignored
 from ..algo.language_handler import is_valid_file
-from ..algo.utils import load_large_diff, clip_tokens, find_line_number_of_relevant_line_in_file
+from ..algo.utils import PRReviewHeader, load_large_diff, clip_tokens, find_line_number_of_relevant_line_in_file, Range
 from ..config_loader import get_settings
 from ..log import get_logger
 from ..servers.utils import RateLimitExceeded
-from .git_provider import GitProvider, IncrementalPR
+from .git_provider import GitProvider, IncrementalPR, MAX_FILES_ALLOWED_FULL
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 
 
 class GithubProvider(GitProvider):
-    def __init__(self, pr_url: Optional[str] = None, incremental=IncrementalPR(False)):
+    def __init__(self, pr_url: Optional[str] = None):
         self.repo_obj = None
         try:
             self.installation_id = context.get("installation_id", None)
         except Exception:
             self.installation_id = None
+        self.max_comment_chars = 65000
         self.base_url = get_settings().get("GITHUB.BASE_URL", "https://api.github.com").rstrip("/")
-        self.base_url_html = self.base_url.split("api")[0].rstrip("/") if "api" in self.base_url else "https://github.com"
+        self.base_url_html = self.base_url.split("api/")[0].rstrip("/") if "api/" in self.base_url else "https://github.com"
+        self.base_domain = self.base_url.replace("https://", "").replace("http://", "")
+        self.base_domain_html = self.base_url_html.replace("https://", "").replace("http://", "")
         self.github_client = self._get_github_client()
         self.repo = None
         self.pr_num = None
@@ -33,16 +38,20 @@ class GithubProvider(GitProvider):
         self.github_user_id = None
         self.diff_files = None
         self.git_files = None
-        self.incremental = incremental
+        self.incremental = IncrementalPR(False)
         if pr_url and 'pull' in pr_url:
             self.set_pr(pr_url)
             self.pr_commits = list(self.pr.get_commits())
-            if self.incremental.is_incremental:
-                self.get_incremental_commits()
             self.last_commit_id = self.pr_commits[-1]
             self.pr_url = self.get_pr_url() # pr_url for github actions can be as api.github.com, so we need to get the url from the pr object
         else:
             self.pr_commits = None
+
+    def get_incremental_commits(self, incremental=IncrementalPR(False)):
+        self.incremental = incremental
+        if self.incremental.is_incremental:
+            self.unreviewed_files_set = dict()
+            self._get_incremental_commits()
 
     def is_supported(self, capability: str) -> bool:
         return True
@@ -54,7 +63,7 @@ class GithubProvider(GitProvider):
         self.repo, self.pr_num = self._parse_pr_url(pr_url)
         self.pr = self._get_pr()
 
-    def get_incremental_commits(self):
+    def _get_incremental_commits(self):
         if not self.pr_commits:
             self.pr_commits = list(self.pr.get_commits())
 
@@ -62,14 +71,15 @@ class GithubProvider(GitProvider):
         if self.previous_review:
             self.incremental.commits_range = self.get_commit_range()
             # Get all files changed during the commit range
-            self.file_set = dict()
+
             for commit in self.incremental.commits_range:
                 if commit.commit.message.startswith(f"Merge branch '{self._get_repo().default_branch}'"):
                     get_logger().info(f"Skipping merge commit {commit.commit.message}")
                     continue
-                self.file_set.update({file.filename: file for file in commit.files})
+                self.unreviewed_files_set.update({file.filename: file for file in commit.files})
         else:
-            raise ValueError("No previous review found")
+            get_logger().info("No previous review found, will review the entire PR")
+            self.incremental.is_incremental = False
 
     def get_commit_range(self):
         last_review_time = self.previous_review.created_at
@@ -90,28 +100,36 @@ class GithubProvider(GitProvider):
             self.comments = list(self.pr.get_issue_comments())
         prefixes = []
         if full:
-            prefixes.append("## PR Review")
+            prefixes.append(PRReviewHeader.REGULAR.value)
         if incremental:
-            prefixes.append("## Incremental PR Review")
+            prefixes.append(PRReviewHeader.INCREMENTAL.value)
         for index in range(len(self.comments) - 1, -1, -1):
             if any(self.comments[index].body.startswith(prefix) for prefix in prefixes):
                 return self.comments[index]
 
     def get_files(self):
-        if self.incremental.is_incremental and self.file_set:
-            return self.file_set.values()
+        if self.incremental.is_incremental and self.unreviewed_files_set:
+            return self.unreviewed_files_set.values()
         try:
             git_files = context.get("git_files", None)
             if git_files:
                 return git_files
-            self.git_files = self.pr.get_files()
+            self.git_files = list(self.pr.get_files()) # 'list' to handle pagination
             context["git_files"] = self.git_files
             return self.git_files
         except Exception:
             if not self.git_files:
-                self.git_files = self.pr.get_files()
+                self.git_files = list(self.pr.get_files())
             return self.git_files
 
+    def get_num_of_files(self):
+        if hasattr(self.git_files, "totalCount"):
+            return self.git_files.totalCount
+        else:
+            try:
+                return len(self.git_files)
+            except Exception as e:
+                return -1
 
     @retry(exceptions=RateLimitExceeded,
            tries=get_settings().github.ratelimit_retries, delay=2, backoff=2, jitter=(1, 3))
@@ -135,22 +153,51 @@ class GithubProvider(GitProvider):
             if self.diff_files:
                 return self.diff_files
 
-            files = self.get_files()
-            diff_files = []
+            # filter files using [ignore] patterns
+            files_original = self.get_files()
+            files = filter_ignored(files_original)
+            if files_original != files:
+                try:
+                    names_original = [file.filename for file in files_original]
+                    names_new = [file.filename for file in files]
+                    get_logger().info(f"Filtered out [ignore] files for pull request:", extra=
+                    {"files": names_original,
+                     "filtered_files": names_new})
+                except Exception:
+                    pass
 
+            diff_files = []
+            invalid_files_names = []
+            counter_valid = 0
             for file in files:
                 if not is_valid_file(file.filename):
+                    invalid_files_names.append(file.filename)
                     continue
 
-                new_file_content_str = self._get_pr_file_content(file, self.pr.head.sha)  # communication with GitHub
                 patch = file.patch
 
-                if self.incremental.is_incremental and self.file_set:
+                # allow only a limited number of files to be fully loaded. We can manage the rest with diffs only
+                counter_valid += 1
+                avoid_load = False
+                if counter_valid >= MAX_FILES_ALLOWED_FULL and patch and not self.incremental.is_incremental:
+                    avoid_load = True
+                    if counter_valid == MAX_FILES_ALLOWED_FULL:
+                        get_logger().info(f"Too many files in PR, will avoid loading full content for rest of files")
+
+                if avoid_load:
+                    new_file_content_str = ""
+                else:
+                    new_file_content_str = self._get_pr_file_content(file, self.pr.head.sha)  # communication with GitHub
+
+                if self.incremental.is_incremental and self.unreviewed_files_set:
                     original_file_content_str = self._get_pr_file_content(file, self.incremental.last_seen_commit_sha)
                     patch = load_large_diff(file.filename, new_file_content_str, original_file_content_str)
-                    self.file_set[file.filename] = patch
+                    self.unreviewed_files_set[file.filename] = patch
                 else:
-                    original_file_content_str = self._get_pr_file_content(file, self.pr.base.sha)
+                    if avoid_load:
+                        original_file_content_str = ""
+                    else:
+                        original_file_content_str = self._get_pr_file_content(file, self.pr.base.sha)
                     if not patch:
                         patch = load_large_diff(file.filename, new_file_content_str, original_file_content_str)
 
@@ -175,6 +222,8 @@ class GithubProvider(GitProvider):
                                                                num_plus_lines=num_plus_lines,
                                                                num_minus_lines=num_minus_lines,)
                 diff_files.append(file_patch_canonical_structure)
+            if invalid_files_names:
+                get_logger().info(f"Filtered out files with invalid extensions: {invalid_files_names}")
 
             self.diff_files = diff_files
             try:
@@ -197,30 +246,18 @@ class GithubProvider(GitProvider):
     def get_comment_url(self, comment) -> str:
         return comment.html_url
 
-    def publish_persistent_comment(self, pr_comment: str, initial_header: str, update_header: bool = True, name='review'):
-        prev_comments = list(self.pr.get_issue_comments())
-        for comment in prev_comments:
-            body = comment.body
-            if body.startswith(initial_header):
-                latest_commit_url = self.get_latest_commit_url()
-                comment_url = self.get_comment_url(comment)
-                if update_header:
-                    updated_header = f"{initial_header}\n\n### ({name.capitalize()} updated until commit {latest_commit_url})\n"
-                    pr_comment_updated = pr_comment.replace(initial_header, updated_header)
-                else:
-                    pr_comment_updated = pr_comment
-                get_logger().info(f"Persistent mode- updating comment {comment_url} to latest review message")
-                response = comment.edit(pr_comment_updated)
-                self.publish_comment(
-                    f"**[Persistent {name}]({comment_url})** updated to latest commit {latest_commit_url}")
-                return
-        self.publish_comment(pr_comment)
+    def publish_persistent_comment(self, pr_comment: str,
+                                   initial_header: str,
+                                   update_header: bool = True,
+                                   name='review',
+                                   final_update_message=True):
+        self.publish_persistent_comment_full(pr_comment, initial_header, update_header, name, final_update_message)
 
     def publish_comment(self, pr_comment: str, is_temporary: bool = False):
         if is_temporary and not get_settings().config.publish_output_progress:
             get_logger().debug(f"Skipping publish_comment for temporary comment: {pr_comment}")
             return
-
+        pr_comment = self.limit_output_characters(pr_comment, self.max_comment_chars)
         response = self.pr.create_issue_comment(pr_comment)
         if hasattr(response, "user") and hasattr(response.user, "login"):
             self.github_user_id = response.user.login
@@ -230,12 +267,14 @@ class GithubProvider(GitProvider):
         self.pr.comments_list.append(response)
         return response
 
-    def publish_inline_comment(self, body: str, relevant_file: str, relevant_line_in_file: str):
+    def publish_inline_comment(self, body: str, relevant_file: str, relevant_line_in_file: str, original_suggestion=None):
+        body = self.limit_output_characters(body, self.max_comment_chars)
         self.publish_inline_comments([self.create_inline_comment(body, relevant_file, relevant_line_in_file)])
 
 
     def create_inline_comment(self, body: str, relevant_file: str, relevant_line_in_file: str,
                               absolute_position: int = None):
+        body = self.limit_output_characters(body, self.max_comment_chars)
         position, absolute_position = find_line_number_of_relevant_line_in_file(self.diff_files,
                                                                                 relevant_file.strip('`'),
                                                                                 relevant_line_in_file,
@@ -408,17 +447,75 @@ class GithubProvider(GitProvider):
             return False
 
     def edit_comment(self, comment, body: str):
+        body = self.limit_output_characters(body, self.max_comment_chars)
         comment.edit(body=body)
+
+    def edit_comment_from_comment_id(self, comment_id: int, body: str):
+        try:
+            # self.pr.get_issue_comment(comment_id).edit(body)
+            body = self.limit_output_characters(body, self.max_comment_chars)
+            headers, data_patch = self.pr._requester.requestJsonAndCheck(
+                "PATCH", f"{self.base_url}/repos/{self.repo}/issues/comments/{comment_id}",
+                input={"body": body}
+            )
+        except Exception as e:
+            get_logger().exception(f"Failed to edit comment, error: {e}")
 
     def reply_to_comment_from_comment_id(self, comment_id: int, body: str):
         try:
             # self.pr.get_issue_comment(comment_id).edit(body)
+            body = self.limit_output_characters(body, self.max_comment_chars)
             headers, data_patch = self.pr._requester.requestJsonAndCheck(
                 "POST", f"{self.base_url}/repos/{self.repo}/pulls/{self.pr_num}/comments/{comment_id}/replies",
                 input={"body": body}
             )
         except Exception as e:
             get_logger().exception(f"Failed to reply comment, error: {e}")
+
+    def get_comment_body_from_comment_id(self, comment_id: int):
+        try:
+            # self.pr.get_issue_comment(comment_id).edit(body)
+            headers, data_patch = self.pr._requester.requestJsonAndCheck(
+                "GET", f"{self.base_url}/repos/{self.repo}/issues/comments/{comment_id}"
+            )
+            return data_patch.get("body","")
+        except Exception as e:
+            get_logger().exception(f"Failed to edit comment, error: {e}")
+            return None
+
+    def publish_file_comments(self, file_comments: list) -> bool:
+        try:
+            headers, existing_comments = self.pr._requester.requestJsonAndCheck(
+                "GET", f"{self.pr.url}/comments"
+            )
+            for comment in file_comments:
+                comment['commit_id'] = self.last_commit_id.sha
+                comment['body'] = self.limit_output_characters(comment['body'], self.max_comment_chars)
+
+                found = False
+                for existing_comment in existing_comments:
+                    comment['commit_id'] = self.last_commit_id.sha
+                    our_app_name = get_settings().get("GITHUB.APP_NAME", "")
+                    same_comment_creator = False
+                    if self.deployment_type == 'app':
+                        same_comment_creator = our_app_name.lower() in existing_comment['user']['login'].lower()
+                    elif self.deployment_type == 'user':
+                        same_comment_creator = self.github_user_id == existing_comment['user']['login']
+                    if existing_comment['subject_type'] == 'file' and comment['path'] == existing_comment['path'] and same_comment_creator:
+                        headers, data_patch = self.pr._requester.requestJsonAndCheck(
+                            "PATCH", f"{self.base_url}/repos/{self.repo}/pulls/comments/{existing_comment['id']}", input={"body":comment['body']}
+                        )
+                        found = True
+                        break
+                if not found:
+                    headers, data_post = self.pr._requester.requestJsonAndCheck(
+                        "POST", f"{self.pr.url}/comments", input=comment
+                    )
+            return True
+        except Exception as e:
+            if get_settings().config.verbosity_level >= 2:
+                get_logger().error(f"Failed to publish diffview file summary, error: {e}")
+            return False
 
     def remove_initial_comment(self):
         try:
@@ -443,6 +540,11 @@ class GithubProvider(GitProvider):
 
     def get_pr_branch(self):
         return self.pr.head.ref
+
+    def get_pr_owner_id(self) -> str | None:
+        if not self.repo:
+            return None
+        return self.repo.split('/')[0]
 
     def get_pr_description_full(self):
         return self.pr.body
@@ -478,6 +580,9 @@ class GithubProvider(GitProvider):
         except Exception:
             return ""
 
+    def get_workspace_name(self):
+        return self.repo.split('/')[0]
+
     def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False) -> Optional[int]:
         if disable_eyes:
             return None
@@ -488,7 +593,7 @@ class GithubProvider(GitProvider):
             )
             return data_patch.get("id", None)
         except Exception as e:
-            get_logger().exception(f"Failed to add eyes reaction, error: {e}")
+            get_logger().warning(f"Failed to add eyes reaction, error: {e}")
             return None
 
     def remove_reaction(self, issue_comment_id: int, reaction_id: str) -> bool:
@@ -503,15 +608,11 @@ class GithubProvider(GitProvider):
             get_logger().exception(f"Failed to remove eyes reaction, error: {e}")
             return False
 
-    @staticmethod
-    def _parse_pr_url(pr_url: str) -> Tuple[str, int]:
+    def _parse_pr_url(self, pr_url: str) -> Tuple[str, int]:
         parsed_url = urlparse(pr_url)
 
-        if 'github.com' not in parsed_url.netloc:
-            raise ValueError("The provided URL is not a valid GitHub URL")
-
         path_parts = parsed_url.path.strip('/').split('/')
-        if 'api.github.com' in parsed_url.netloc:
+        if self.base_domain in parsed_url.netloc:
             if len(path_parts) < 5 or path_parts[3] != 'pulls':
                 raise ValueError("The provided URL does not appear to be a GitHub PR URL")
             repo_name = '/'.join(path_parts[1:3])
@@ -532,15 +633,10 @@ class GithubProvider(GitProvider):
 
         return repo_name, pr_number
 
-    @staticmethod
-    def _parse_issue_url(issue_url: str) -> Tuple[str, int]:
+    def _parse_issue_url(self, issue_url: str) -> Tuple[str, int]:
         parsed_url = urlparse(issue_url)
-
-        if 'github.com' not in parsed_url.netloc:
-            raise ValueError("The provided URL is not a valid GitHub URL")
-
         path_parts = parsed_url.path.strip('/').split('/')
-        if 'api.github.com' in parsed_url.netloc:
+        if self.base_domain in parsed_url.netloc:
             if len(path_parts) < 5 or path_parts[3] != 'issues':
                 raise ValueError("The provided URL does not appear to be a GitHub ISSUE URL")
             repo_name = '/'.join(path_parts[1:3])
@@ -598,12 +694,35 @@ class GithubProvider(GitProvider):
     def _get_pr(self):
         return self._get_repo().get_pull(self.pr_num)
 
-    def _get_pr_file_content(self, file: FilePatchInfo, sha: str) -> str:
+    def get_pr_file_content(self, file_path: str, branch: str) -> str:
         try:
-            file_content_str = str(self._get_repo().get_contents(file.filename, ref=sha).decoded_content.decode())
+            file_content_str = str(
+                self._get_repo()
+                .get_contents(file_path, ref=branch)
+                .decoded_content.decode()
+            )
         except Exception:
             file_content_str = ""
         return file_content_str
+
+    def create_or_update_pr_file(
+        self, file_path: str, branch: str, contents="", message=""
+    ) -> None:
+        try:
+            file_obj = self._get_repo().get_contents(file_path, ref=branch)
+            sha1=file_obj.sha
+        except Exception:
+            sha1=""
+        self.repo_obj.update_file(
+            path=file_path,
+            message=message,
+            content=contents,
+            sha=sha1,
+            branch=branch,
+        )
+
+    def _get_pr_file_content(self, file: FilePatchInfo, sha: str) -> str:
+        return self.get_pr_file_content(file.filename, sha)
 
     def publish_labels(self, pr_types):
         try:
@@ -618,18 +737,25 @@ class GithubProvider(GitProvider):
                 "PUT", f"{self.pr.issue_url}/labels", input=post_parameters
             )
         except Exception as e:
-            get_logger().exception(f"Failed to publish labels, error: {e}")
+            get_logger().warning(f"Failed to publish labels, error: {e}")
 
-    def get_pr_labels(self):
+    def get_pr_labels(self, update=False):
         try:
-            return [label.name for label in self.pr.labels]
+            if not update:
+                labels =self.pr.labels
+                return [label.name for label in labels]
+            else: # obtain the latest labels. Maybe they changed while the AI was running
+                headers, labels = self.pr._requester.requestJsonAndCheck(
+                    "GET", f"{self.pr.issue_url}/labels")
+                return [label['name'] for label in labels]
+
         except Exception as e:
             get_logger().exception(f"Failed to get labels, error: {e}")
             return []
 
     def get_repo_labels(self):
         labels = self.repo_obj.get_labels()
-        return [label for label in labels]
+        return [label for label in itertools.islice(labels, 50)]
 
     def get_commit_messages(self):
         """
@@ -684,6 +810,32 @@ class GithubProvider(GitProvider):
             link = f"{self.base_url_html}/{self.repo}/pull/{self.pr_num}/files#diff-{sha_file}R{relevant_line_start}"
         return link
 
+    def get_lines_link_original_file(self, filepath: str, component_range: Range) -> str:
+        """
+        Returns the link to the original file on GitHub that corresponds to the given filepath and component range.
+
+        Args:
+            filepath (str): The path of the file.
+            component_range (Range): The range of lines that represent the component.
+
+        Returns:
+            str: The link to the original file on GitHub.
+
+        Example:
+            >>> filepath = "path/to/file.py"
+            >>> component_range = Range(line_start=10, line_end=20)
+            >>> link = get_lines_link_original_file(filepath, component_range)
+            >>> print(link)
+            "https://github.com/{repo}/blob/{commit_sha}/{filepath}/#L11-L21"
+        """
+        line_start = component_range.line_start + 1
+        line_end = component_range.line_end + 1
+        # link = (f"https://github.com/{self.repo}/blob/{self.last_commit_id.sha}/{filepath}/"
+        #         f"#L{line_start}-L{line_end}")
+        link = (f"{self.base_url_html}/{self.repo}/blob/{self.last_commit_id.sha}/{filepath}/"
+                f"#L{line_start}-L{line_end}")
+
+        return link
 
     def get_pr_id(self):
         try:
@@ -703,22 +855,4 @@ class GithubProvider(GitProvider):
             return False
 
     def calc_pr_statistics(self, pull_request_data: dict):
-        try:
-            out = {}
-            from datetime import datetime
-            created_at = pull_request_data['created_at']
-            closed_at = pull_request_data['closed_at']
-            closed_at_datetime = datetime.strptime(closed_at, "%Y-%m-%dT%H:%M:%SZ")
-            created_at_datetime = datetime.strptime(created_at, "%Y-%m-%dT%H:%M:%SZ")
-            difference = closed_at_datetime - created_at_datetime
-            out['hours'] = difference.total_seconds() / 3600
-            out['commits'] = pull_request_data['commits']
-            out['comments'] = pull_request_data['comments']
-            out['review_comments'] = pull_request_data['review_comments']
-            out['changed_files'] = pull_request_data['changed_files']
-            out['additions'] = pull_request_data['additions']
-            out['deletions'] = pull_request_data['deletions']
-        except Exception as e:
-            get_logger().exception(f"Failed to calculate PR statistics, error: {e}")
             return {}
-        return out

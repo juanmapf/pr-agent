@@ -35,7 +35,8 @@ class PRGenerateLabels:
 
         # Initialize the AI handler
         self.ai_handler = ai_handler()
-    
+        self.ai_handler.main_pr_language = self.main_pr_language
+
         # Initialize the variables dictionary
         self.vars = {
             "title": self.git_provider.pr.title,
@@ -136,12 +137,13 @@ class PRGenerateLabels:
         environment = Environment(undefined=StrictUndefined)
         set_custom_labels(variables, self.git_provider)
         self.variables = variables
-        system_prompt = environment.from_string(get_settings().pr_custom_labels_prompt.system).render(variables)
-        user_prompt = environment.from_string(get_settings().pr_custom_labels_prompt.user).render(variables)
+
+        system_prompt = environment.from_string(get_settings().pr_custom_labels_prompt.system).render(self.variables)
+        user_prompt = environment.from_string(get_settings().pr_custom_labels_prompt.user).render(self.variables)
 
         response, finish_reason = await self.ai_handler.chat_completion(
             model=model,
-            temperature=0.2,
+            temperature=get_settings().config.temperature,
             system=system_prompt,
             user=user_prompt
         )
@@ -163,6 +165,7 @@ class PRGenerateLabels:
                 pr_types = self.data['labels']
             elif type(self.data['labels']) == str:
                 pr_types = self.data['labels'].split(',')
+        pr_types = [label.strip() for label in pr_types]
 
         # convert lowercase labels to original case
         try:

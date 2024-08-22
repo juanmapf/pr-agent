@@ -22,8 +22,11 @@ class PR_LineQuestions:
     def __init__(self, pr_url: str, args=None, ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
         self.question_str = self.parse_args(args)
         self.git_provider = get_git_provider()(pr_url)
-
+        self.main_pr_language = get_main_pr_language(
+            self.git_provider.get_languages(), self.git_provider.get_files()
+        )
         self.ai_handler = ai_handler()
+        self.ai_handler.main_pr_language = self.main_pr_language
 
         self.vars = {
             "title": self.git_provider.pr.title,
@@ -99,6 +102,6 @@ class PR_LineQuestions:
             print(f"\nSystem prompt:\n{system_prompt}")
             print(f"\nUser prompt:\n{user_prompt}")
 
-        response, finish_reason = await self.ai_handler.chat_completion(model=model, temperature=0.2,
-                                                                        system=system_prompt, user=user_prompt)
+        response, finish_reason = await self.ai_handler.chat_completion(
+            model=model, temperature=get_settings().config.temperature, system=system_prompt, user=user_prompt)
         return response

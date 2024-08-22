@@ -208,7 +208,7 @@ class GerritProvider(GitProvider):
         Comment = namedtuple('Comment', ['body'])
         return Comments([Comment(c['message']) for c in reversed(comments)])
 
-    def get_pr_labels(self):
+    def get_pr_labels(self, update=False):
         raise NotImplementedError(
             'Getting labels is not implemented for the gerrit provider')
 
@@ -376,7 +376,7 @@ class GerritProvider(GitProvider):
             'provider')
 
     def publish_inline_comment(self, body: str, relevant_file: str,
-                               relevant_line_in_file: str):
+                               relevant_line_in_file: str, original_suggestion=None):
         raise NotImplementedError(
             'Publishing inline comments is not implemented for the gerrit '
             'provider')

@@ -21,6 +21,8 @@ class PRInformationFromUser:
             self.git_provider.get_languages(), self.git_provider.get_files()
         )
         self.ai_handler = ai_handler()
+        self.ai_handler.main_pr_language = self.main_pr_language
+
         self.vars = {
             "title": self.git_provider.pr.title,
             "branch": self.git_provider.get_pr_branch(),
@@ -64,8 +66,8 @@ class PRInformationFromUser:
         if get_settings().config.verbosity_level >= 2:
             get_logger().info(f"\nSystem prompt:\n{system_prompt}")
             get_logger().info(f"\nUser prompt:\n{user_prompt}")
-        response, finish_reason = await self.ai_handler.chat_completion(model=model, temperature=0.2,
-                                                                        system=system_prompt, user=user_prompt)
+        response, finish_reason = await self.ai_handler.chat_completion(
+            model=model, temperature=get_settings().config.temperature, system=system_prompt, user=user_prompt)
         return response
 
     def _prepare_pr_answer(self) -> str:
